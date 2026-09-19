@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="bn" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Smart Hisab Pro - স্মার্ট হিসাব প্রো | Neo-Fintech Terminal</title>
+    <meta name="description" content="স্মার্ট হিসাব প্রো - Google Sheets চালিত পূর্ণাঙ্গ আয়-ব্যয় ও ব্যবসা ব্যবস্থাপনা PWA" />
+    <meta property="og:title" content="Smart Hisab Pro - স্মার্ট হিসাব প্রো" />
+    <meta property="og:description" content="স্মার্ট হিসাব প্রো - Google Sheets চালিত পূর্ণাঙ্গ আয়-ব্যয় ও ব্যবসা ব্যবস্থাপনা PWA" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- PWA & Mobile Optimization -->
+    <meta name="theme-color" content="#080B10" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="SmartHisab" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <!-- Typography: Hind Siliguri for Bengali + JetBrains Mono & Space Grotesk for Neo-Fintech Metrics -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+
+    <!-- Chart.js for High-Performance Sparklines & Area Wave Charts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+    <!-- Terminal Stylesheet -->
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+
+    <!-- 🔒 Google Identity & Terminal Security Gate -->
+    <div id="passcodeScreen" class="passcode-screen" style="display: none;">
+      <div class="passcode-terminal-card" id="passcodeCard">
+        <div class="passcode-icon">🔐</div>
+        <div class="passcode-header" style="margin-bottom: 16px;">
+          <h2>SMART HISAB TERMINAL</h2>
+          <p id="authSubtitle" style="color: var(--cyan-cyber); font-size: 0.82rem; margin-top: 4px; letter-spacing: 0.5px;">
+            গুগল অ্যাকাউন্ট সিকিউরিটি ভেরিফিকেশন
+          </p>
+        </div>
+
+        <div id="authNotice" style="background: rgba(66, 133, 244, 0.08); border: 1px solid rgba(66, 133, 244, 0.25); border-radius: var(--radius-sm); padding: 14px; margin-bottom: 20px; font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; text-align: left;">
+          <div style="font-weight: 700; color: #8AB4F8; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">
+            🛡️ অনুমোদিত পরিচয়পত্র গেট
+          </div>
+          আর্থিক তথ্যের সর্বোচ্চ সুরক্ষার স্বার্থে শুধুমাত্র আপনার অনুমোদিত গুগল অ্যাকাউন্ট (<strong style="color: var(--text-pure);">tanjir.dollar@gmail.com</strong>) সাইন-ইন করে এই টার্মিনালে প্রবেশ করতে পারবে।
+        </div>
+
+        <!-- Google Sign In Button (Official GSI Material Styling) -->
+        <button type="button" class="gsi-material-button" id="googleSignInBtn" onclick="window.SmartHisab.handleGoogleLogin()">
+          <div class="gsi-material-button-state"></div>
+          <div class="gsi-material-button-content-wrapper">
+            <div class="gsi-material-button-icon">
+              <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style="display: block;">
+                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                <path fill="none" d="M0 0h48v48H0z"></path>
+              </svg>
+            </div>
+            <span class="gsi-material-button-contents" id="googleBtnText">Google দিয়ে সাইন-ইন ও আনলক করুন</span>
+          </div>
+        </button>
+
+        <div class="passcode-error" id="passcodeError" style="margin-top: 14px;"></div>
+
+        <!-- Quick Terminal PIN Keypad (For already authenticated active devices) -->
+        <div id="quickPinSection" style="margin-top: 18px; border-top: 1px solid var(--border-subtle); padding-top: 14px; display: none;">
+          <div style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 10px;">অথবা ডিভাইস কুইক পিন দিয়ে প্রবেশ করুন:</div>
+          <div class="pin-dots" id="pinDots" style="margin-bottom: 14px;">
+            <div class="pin-dot" id="dot0"></div>
+            <div class="pin-dot" id="dot1"></div>
+            <div class="pin-dot" id="dot2"></div>
+            <div class="pin-dot" id="dot3"></div>
+          </div>
+
+          <div class="keypad-grid" style="max-width: 240px; margin-bottom: 8px;">
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('1')">1</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('2')">2</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('3')">3</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('4')">4</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('5')">5</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('6')">6</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('7')">7</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('8')">8</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('9')">9</button>
+            <button type="button" class="keypad-btn" style="height: 42px; color: var(--red-coral); font-size: 0.85rem;" onclick="window.SmartHisab.clearKey()">C</button>
+            <button type="button" class="keypad-btn" style="height: 42px; font-size: 1.15rem;" onclick="window.SmartHisab.enterKey('0')">0</button>
+            <button type="button" class="keypad-btn" style="height: 42px; color: var(--gold-neon); font-size: 1rem;" onclick="window.SmartHisab.deleteKey()">⌫</button>
+          </div>
+        </div>
+
+        <input type="password" id="hiddenPinInput" maxlength="6" inputmode="numeric" style="opacity: 0; position: absolute; pointer-events: none;" />
+      </div>
+    </div>
+
+    <!-- Top Trading Terminal App Header -->
+    <header class="app-header">
+      <div class="header-inner">
+        <!-- Brand Logo & Title Block -->
+        <a href="#dashboard" class="brand-wrapper" onclick="window.SmartHisab.switchTab('dashboard')">
+          <div class="brand-icon">৳</div>
+          <div class="brand-text-block">
+            <h1 class="brand-title">Smart Hisab Pro</h1>
+            <p class="brand-subtitle" id="headerSubtitle">👋 শুভ দিন, তানজির</p>
+          </div>
+        </a>
+
+        <!-- Header Controls (Sync, Theme, Settings) -->
+        <div class="header-controls-group">
+          <!-- Live Sync Status Indicator -->
+          <div class="sync-pill" id="syncPill" onclick="window.SmartHisab.triggerManualSync()" title="ডাটাবেস সিঙ্ক স্ট্যাটাস (ক্লিক করে রিফ্রেশ করুন)">
+            <span class="sync-dot live" id="syncDot"></span>
+            <span class="sync-text-label" id="syncText">● LIVE</span>
+          </div>
+
+          <!-- Theme Toggle Button (Dark ⇄ Light) -->
+          <button class="icon-btn theme-toggle-btn" id="themeToggleBtn" onclick="window.SmartHisab.toggleTheme()" title="থিম পরিবর্তন করুন (ডার্ক / লাইট)" aria-label="থিম পরিবর্তন">
+            ☀️
+          </button>
+
+          <!-- Settings Button -->
+          <button class="icon-btn settings-header-btn" onclick="window.SmartHisab.switchTab('settings')" title="API, Google ও সিকিউরিটি সেটিংস" aria-label="সেটিংস">
+            ⚙️
+          </button>
+        </div>
+
+        <!-- Clean Oversized Authenticated User Account Badge -->
+        <div class="user-profile-badge oversized-badge" id="userProfileBadge" onclick="window.SmartHisab.switchTab('settings')" title="ইউজার প্রোফাইল ও অ্যাকাউন্ট" aria-label="ইউজার প্রোফাইল">
+          <div id="userAvatarContainer" class="user-avatar-wrap">
+            <span class="user-avatar-initials">তা</span>
+          </div>
+          <span class="user-meta-text" id="userMetaText">তানজির আহমেদ ডলার</span>
+          <span class="user-status-dot" title="অ্যাক্টিভ"></span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Container Layout -->
+    <main class="main-container">
+      <!-- Desktop Navigation Tabs -->
+      <nav class="desktop-nav-tabs" id="desktopNavTabs">
+        <button class="nav-tab-btn active" data-tab="dashboard" onclick="window.SmartHisab.switchTab('dashboard')">
+          📊 ড্যাশবোর্ড
+        </button>
+        <button class="nav-tab-btn" data-tab="history" onclick="window.SmartHisab.switchTab('history')">
+          📑 লেনদেন হিস্ট্রি
+        </button>
+        <button class="nav-tab-btn" data-tab="production" onclick="window.SmartHisab.switchTab('production')">
+          🏭 প্রোডাকশন খাতা
+        </button>
+        <button class="nav-tab-btn" data-tab="loan" onclick="window.SmartHisab.switchTab('loan')">
+          🤝 লোন ট্র্যাকার
+        </button>
+        <button class="nav-tab-btn" data-tab="fund" onclick="window.SmartHisab.switchTab('fund')">
+          💰 মাল্টি-ফান্ড
+        </button>
+        <button class="nav-tab-btn" data-tab="settings" onclick="window.SmartHisab.switchTab('settings')">
+          ⚙️ কনফিগ
+        </button>
+      </nav>
+
+      <!-- Active View Content Container -->
+      <div id="viewContainer">
+        <!-- Skeleton placeholders while booting -->
+        <div class="stat-cards-grid">
+          <div class="terminal-card stat-card" style="height: 120px;"></div>
+          <div class="terminal-card stat-card" style="height: 120px;"></div>
+          <div class="terminal-card stat-card" style="height: 120px;"></div>
+          <div class="terminal-card stat-card" style="height: 120px;"></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Floating Action Button (+ New Entry) -->
+    <div class="fab-container">
+      <button class="fab-btn" onclick="window.SmartHisab.toggleQuickMenu()" title="নতুন লেনদেন">+</button>
+
+      <!-- Quick Action Drawer Menu -->
+      <div class="quick-menu" id="quickMenu">
+        <button class="quick-menu-item" onclick="window.SmartHisab.toggleQuickMenu(); window.SmartHisab.openAddModal('income')">
+          <span style="color: var(--green-electric);">[+]</span> নতুন আয় (Income)
+        </button>
+        <button class="quick-menu-item" onclick="window.SmartHisab.toggleQuickMenu(); window.SmartHisab.openAddModal('expense')">
+          <span style="color: var(--red-coral);">[-]</span> নতুন খরচ (Expense)
+        </button>
+        <button class="quick-menu-item" onclick="window.SmartHisab.toggleQuickMenu(); window.SmartHisab.openAddModal('production', 'Work')">
+          <span style="color: var(--cyan-cyber);">[⚙]</span> প্রোডাকশন কাজ (Work)
+        </button>
+        <button class="quick-menu-item" onclick="window.SmartHisab.toggleQuickMenu(); window.SmartHisab.openAddModal('production', 'Withdrawal')">
+          <span style="color: var(--gold-neon);">[৳]</span> বিল উইথড্রয়াল
+        </button>
+        <button class="quick-menu-item" onclick="window.SmartHisab.toggleQuickMenu(); window.SmartHisab.openAddModal('loan')">
+          <span style="color: #FB923C;">[🤝]</span> লোন রেকর্ড (Loan)
+        </button>
+        <button class="quick-menu-item" onclick="window.SmartHisab.toggleQuickMenu(); window.SmartHisab.openAddModal('fund_transaction')">
+          <span style="color: var(--purple-neon);">[💰]</span> ফান্ড লেনদেন (In/Out)
+        </button>
+      </div>
+    </div>
+
+    <!-- Mobile Fixed Bottom Navigation -->
+    <nav class="mobile-bottom-nav">
+      <button class="mobile-nav-item active" data-tab="dashboard" onclick="window.SmartHisab.switchTab('dashboard')">
+        <span>📊</span>
+        <span>ড্যাশবোর্ড</span>
+      </button>
+      <button class="mobile-nav-item" data-tab="history" onclick="window.SmartHisab.switchTab('history')">
+        <span>📑</span>
+        <span>হিস্ট্রি</span>
+      </button>
+      <button class="mobile-nav-item" data-tab="production" onclick="window.SmartHisab.switchTab('production')">
+        <span>🏭</span>
+        <span>প্রোডাকশন</span>
+      </button>
+      <button class="mobile-nav-item" data-tab="loan" onclick="window.SmartHisab.switchTab('loan')">
+        <span>🤝</span>
+        <span>লোন</span>
+      </button>
+      <button class="mobile-nav-item" data-tab="fund" onclick="window.SmartHisab.switchTab('fund')">
+        <span>💰</span>
+        <span>ফান্ড</span>
+      </button>
+    </nav>
+
+    <!-- Bottom Sheet Modal Backdrop & Container -->
+    <div class="modal-overlay" id="modalOverlay" onclick="window.SmartHisab.closeSheetModal()"></div>
+    <div class="bottom-sheet" id="bottomSheetModal">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header">
+        <h3 class="sheet-title" id="sheetModalTitle">লেনদেন বিবরণী</h3>
+        <button class="icon-btn" onclick="window.SmartHisab.closeSheetModal()">✕</button>
+      </div>
+      <form id="sheetForm" onsubmit="event.preventDefault(); window.SmartHisab.submitSheetForm();">
+        <div id="sheetModalBody"></div>
+        <div class="sheet-actions">
+          <button type="button" id="sheetDeleteBtn" class="btn btn-danger" style="display: none; flex: 0 0 48px;" onclick="window.SmartHisab.submitSheetDelete()" title="মুছে ফেলুন">
+            🗑️
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="window.SmartHisab.closeSheetModal()">বাতিল</button>
+          <button type="submit" class="btn btn-primary" id="sheetSubmitBtn">সংরক্ষণ করুন</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- 📑 Record Detail Modal (Tap to View Full Record & Image) -->
+    <div class="modal-overlay" id="detailModalOverlay" onclick="window.SmartHisab.closeRecordDetailModal()"></div>
+    <div class="bottom-sheet record-detail-sheet" id="recordDetailModal">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header">
+        <h3 class="sheet-title" id="detailModalTitle">রেকর্ড বিবরণী</h3>
+        <button type="button" class="icon-btn" onclick="window.SmartHisab.closeRecordDetailModal()">✕</button>
+      </div>
+      <div class="detail-modal-body" id="detailModalBody"></div>
+      <div class="sheet-actions" id="detailModalActions">
+        <button type="button" class="btn btn-secondary" onclick="window.SmartHisab.closeRecordDetailModal()">বন্ধ করুন</button>
+        <button type="button" class="btn btn-secondary" id="detailPendingToggleBtn" style="white-space: nowrap;">⏳ পেন্ডিং</button>
+        <button type="button" class="btn btn-primary" id="detailEditBtn">✏️ সম্পাদন করুন</button>
+      </div>
+    </div>
+
+    <!-- 📸 Full-Screen Image Preview Lightbox Modal -->
+    <div class="image-preview-overlay" id="imagePreviewModal" onclick="window.SmartHisab.closeImagePreview(event)">
+      <div class="preview-content-box" onclick="event.stopPropagation()">
+        <button type="button" class="preview-close-btn" onclick="window.SmartHisab.closeImagePreview()">✕</button>
+        <img id="previewModalImg" src="" alt="প্রোডাকশন ইমেজ প্রিভিউ" referrerpolicy="no-referrer" />
+        <div class="preview-caption" id="previewModalCaption"></div>
+        <div style="display: flex; justify-content: center; margin-top: 10px;">
+          <a id="previewModalDriveBtn" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-secondary" style="display: none; font-size: 0.82rem; text-decoration: none; padding: 6px 14px; gap: 6px; align-items: center;">
+            📁 Google Drive এ মূল ছবি দেখুন ↗
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- PWA Service Worker Registration -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then(reg => console.log('[PWA] Service Worker active:', reg.scope))
+            .catch(err => console.warn('[PWA] Registration failed:', err));
+        });
+      }
+    </script>
+
+    <!-- App Logic Module -->
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "Smart Hisab Pro",
+  "description": "স্মার্ট হিসাব প্রো - Google Sheets চালিত পূর্ণাঙ্গ আয়-ব্যয় ও ব্যবসা ব্যবস্থাপনা PWA",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

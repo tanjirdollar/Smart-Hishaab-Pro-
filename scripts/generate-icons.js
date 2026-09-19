@@ -1,0 +1,145 @@
+import fs from 'fs';
+import path from 'path';
+import sharp from 'sharp';
+
+const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient: Deep OLED Black with subtle midnight depth -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080B10" />
+      <stop offset="50%" stop-color="#0D121D" />
+      <stop offset="100%" stop-color="#05070B" />
+    </linearGradient>
+
+    <!-- Golden Neon Glow Gradient -->
+    <linearGradient id="goldGlowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE68A" />
+      <stop offset="45%" stop-color="#F59E0B" />
+      <stop offset="100%" stop-color="#D97706" />
+    </linearGradient>
+
+    <!-- Core Bright Metallic Highlight -->
+    <linearGradient id="metallicHighlight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFBEB" />
+      <stop offset="60%" stop-color="#FEF3C7" />
+      <stop offset="100%" stop-color="#F59E0B" />
+    </linearGradient>
+
+    <!-- Cyber Cyan Accent Gradient -->
+    <linearGradient id="cyanCyberGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00E5FF" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <!-- Radial Background Glow -->
+    <radialGradient id="ambientGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.25" />
+      <stop offset="45%" stop-color="#F59E0B" stop-opacity="0.08" />
+      <stop offset="100%" stop-color="#080B10" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Precision High-Tech Glow Filter -->
+    <filter id="goldGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="12" result="blur1" />
+      <feGaussianBlur stdDeviation="5" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur1" />
+        <feMergeNode in="blur2" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Deep OLED Black Squircle Base (#080B10) -->
+  <rect width="512" height="512" rx="116" fill="url(#bgGrad)" />
+
+  <!-- Outer Neon Micro-Border & Framing Rim -->
+  <rect x="10" y="10" width="492" height="492" rx="108" fill="none" stroke="rgba(245, 158, 11, 0.32)" stroke-width="3" />
+  <rect x="18" y="18" width="476" height="476" rx="100" fill="none" stroke="rgba(255, 255, 255, 0.05)" stroke-width="1.5" />
+
+  <!-- Ambient Golden Core Glow -->
+  <circle cx="256" cy="256" r="210" fill="url(#ambientGlow)" />
+
+  <!-- High-Tech Geometric Precision Framing Ticks (Corner Accents) -->
+  <path d="M 88 140 L 88 104 A 16 16 0 0 1 104 88 L 140 88" fill="none" stroke="rgba(245, 158, 11, 0.45)" stroke-width="3.5" stroke-linecap="round" />
+  <path d="M 424 140 L 424 104 A 16 16 0 0 0 408 88 L 372 88" fill="none" stroke="rgba(245, 158, 11, 0.45)" stroke-width="3.5" stroke-linecap="round" />
+  <path d="M 88 372 L 88 408 A 16 16 0 0 0 104 424 L 140 424" fill="none" stroke="rgba(245, 158, 11, 0.45)" stroke-width="3.5" stroke-linecap="round" />
+  <path d="M 424 372 L 424 408 A 16 16 0 0 1 408 424 L 372 424" fill="none" stroke="rgba(245, 158, 11, 0.45)" stroke-width="3.5" stroke-linecap="round" />
+
+  <!-- Subtle Financial Growth Arc -->
+  <path d="M 112 376 C 120 236, 230 116, 388 116" fill="none" stroke="url(#cyanCyberGrad)" stroke-width="3.5" stroke-dasharray="7 7" opacity="0.38" />
+
+  <!-- Glowing Golden Financial Monogram: Stylized Bengali Taka "৳" + Financial Growth Arrow -->
+  <!-- Glowing Base -->
+  <g filter="url(#goldGlow)" opacity="0.95">
+    <!-- Strike-Through Bar -->
+    <path d="M 144 238 L 368 238" stroke="url(#goldGlowGrad)" stroke-width="26" stroke-linecap="round" />
+
+    <!-- Taka S-Curve Body -->
+    <path d="M 214 170 C 214 116, 280 100, 318 134 C 350 164, 336 218, 290 248 C 248 276, 212 308, 212 366 L 336 366" 
+          fill="none" stroke="url(#goldGlowGrad)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" />
+
+    <!-- Growth Apex Arrow at base -->
+    <path d="M 336 366 L 374 328 M 374 328 L 346 328 M 374 328 L 374 356" 
+          fill="none" stroke="url(#goldGlowGrad)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <!-- Crisp Core Stroke (White-Gold Metallic) -->
+  <g>
+    <!-- Strike-Through Core -->
+    <path d="M 148 238 L 364 238" stroke="url(#metallicHighlight)" stroke-width="16" stroke-linecap="round" />
+
+    <!-- Taka S-Curve Core -->
+    <path d="M 214 170 C 214 120, 276 106, 314 138 C 344 166, 330 214, 288 244 C 250 272, 216 304, 216 366 L 336 366" 
+          fill="none" stroke="url(#metallicHighlight)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+
+    <!-- Growth Arrow Core -->
+    <path d="M 336 366 L 374 328 M 374 328 L 348 328 M 374 328 L 374 354" 
+          fill="none" stroke="#FFFBEB" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <!-- Terminal Telemetry Node Dots -->
+  <circle cx="148" cy="238" r="9" fill="#00E5FF" filter="url(#goldGlow)" />
+  <circle cx="364" cy="238" r="9" fill="#00F29D" filter="url(#goldGlow)" />
+  <circle cx="214" cy="170" r="8" fill="#FDE68A" />
+  <circle cx="374" cy="328" r="10" fill="#00F29D" />
+
+  <!-- Micro Grid Indicator Dots -->
+  <circle cx="170" cy="116" r="3" fill="rgba(245, 158, 11, 0.45)" />
+  <circle cx="342" cy="116" r="3" fill="rgba(245, 158, 11, 0.45)" />
+  <circle cx="170" cy="396" r="3" fill="rgba(245, 158, 11, 0.45)" />
+  <circle cx="342" cy="396" r="3" fill="rgba(245, 158, 11, 0.45)" />
+</svg>`;
+
+async function run() {
+  const publicDir = path.resolve('public');
+  if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
+  }
+
+  // Write public/icon.svg
+  fs.writeFileSync(path.join(publicDir, 'icon.svg'), svgContent, 'utf8');
+  fs.writeFileSync(path.resolve('icon.svg'), svgContent, 'utf8');
+
+  const svgBuffer = Buffer.from(svgContent);
+
+  // Generate 512x512 PNG
+  const pwa512Buffer = await sharp(svgBuffer).resize(512, 512).png().toBuffer();
+  fs.writeFileSync(path.join(publicDir, 'pwa-512x512.png'), pwa512Buffer);
+  fs.writeFileSync(path.join(publicDir, 'pwa-maskable-512x512.png'), pwa512Buffer);
+
+  // Generate 192x192 PNG
+  const pwa192Buffer = await sharp(svgBuffer).resize(192, 192).png().toBuffer();
+  fs.writeFileSync(path.join(publicDir, 'pwa-192x192.png'), pwa192Buffer);
+
+  // Generate 180x180 Apple Touch Icon PNG
+  const appleTouchBuffer = await sharp(svgBuffer).resize(180, 180).png().toBuffer();
+  fs.writeFileSync(path.join(publicDir, 'apple-touch-icon.png'), appleTouchBuffer);
+  fs.writeFileSync(path.resolve('apple-touch-icon.png'), appleTouchBuffer);
+
+  console.log('PNG Assets generated successfully!');
+  console.log('512 Base64 Length:', pwa512Buffer.toString('base64').length);
+  console.log('192 Base64 Length:', pwa192Buffer.toString('base64').length);
+}
+
+run().catch(console.error);

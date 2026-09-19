@@ -1,0 +1,39 @@
+{
+  "id": "/",
+  "name": "Smart Hisab Pro - স্মার্ট হিসাব প্রো",
+  "short_name": "SmartHisab",
+  "description": "স্মার্ট হিসাব প্রো - Google Sheets চালিত পূর্ণাঙ্গ আয়-ব্যয়, প্রোডাকশন ও মাল্টি-ফান্ড ব্যবসা ব্যবস্থাপনা PWA",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#080B10",
+  "theme_color": "#080B10",
+  "categories": ["finance", "business", "productivity"],
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
