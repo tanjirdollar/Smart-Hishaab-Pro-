@@ -51,33 +51,52 @@ export function getActiveSecurityToken() {
 }
 
 /**
- * Preserves pending status against sheet overrides
+ * Normalizes and synchronizes pending status from remote Google Sheets
+ * Ensures cross-browser consistency: any update made in one browser is authoritatively synced to all browsers
  */
 function enrichPendingStatus(items) {
   if (!Array.isArray(items)) return [];
   return items.map(item => {
     if (!item) return item;
     const id = String(item.ID || item.id || '');
-    const localPending = getRecordPendingStatus(id);
+    
+    // Check remote status value from Google Sheets
+    const rawStatus = (item.Status !== undefined && item.Status !== null) ? String(item.Status).trim() : '';
     const remoteIsPending = (
-      item.Status === 'Pending' || 
+      rawStatus.toLowerCase() === 'pending' || 
+      rawStatus === 'পেন্ডিং' || 
       item.IsPending === true || 
       item.IsPending === 'true' || 
-      item.IsPending === 'Pending' || 
-      item.Status === 'পেন্ডিং'
+      item.IsPending === 'Pending'
     );
 
-    if (localPending !== null) {
-      // Local user preference is authoritatively preserved
-      item.IsPending = localPending;
-      item.Status = localPending ? 'Pending' : (item.Status === 'Pending' ? 'Completed' : (item.Status || 'Completed'));
-    } else if (remoteIsPending) {
+    const remoteIsCompleted = (
+      rawStatus.toLowerCase() === 'completed' || 
+      rawStatus === 'সম্পন্ন' || 
+      item.IsPending === false || 
+      item.IsPending === 'false'
+    );
+
+    if (remoteIsPending) {
+      // Remote marked pending: sync across all browsers
       item.IsPending = true;
       item.Status = 'Pending';
       setRecordPendingStatus(id, true);
-    } else {
+    } else if (remoteIsCompleted || rawStatus !== '') {
+      // Remote marked completed: sync across all browsers and clear stale local pending
       item.IsPending = false;
-      if (!item.Status) item.Status = 'Completed';
+      item.Status = 'Completed';
+      setRecordPendingStatus(id, false);
+    } else {
+      // If remote status column was completely blank in sheet, check local registry fallback
+      const localPending = getRecordPendingStatus(id);
+      if (localPending !== null) {
+        item.IsPending = localPending;
+        item.Status = localPending ? 'Pending' : 'Completed';
+      } else {
+        item.IsPending = false;
+        item.Status = 'Completed';
+      }
     }
     return item;
   });

@@ -25,15 +25,11 @@ export const SCOPES = [
 
 const provider = new GoogleAuthProvider();
 SCOPES.forEach(scope => provider.addScope(scope));
-// Force prompt if needed to ensure drive.file scope consent
-provider.setCustomParameters({
-  prompt: 'select_account'
-});
 
 // Primary Owner / Admin Email
 export const DEFAULT_ADMIN_EMAIL = 'tanjir.dollar@gmail.com';
 
-// In-memory token cache (MANDATORY: Never store access token in localStorage per security guidelines)
+// In-memory token cache (synchronized with per-tab sessionStorage for session persistence)
 let cachedAccessToken = null;
 let currentGoogleUser = null;
 let isSigningIn = false;
@@ -76,14 +72,29 @@ export function isEmailAuthorized(email) {
 }
 
 /**
- * Get in-memory OAuth Access Token
+ * Get in-memory / session OAuth Access Token
  */
 export function getCachedAccessToken() {
-  return cachedAccessToken;
+  if (cachedAccessToken) return cachedAccessToken;
+  try {
+    const stored = sessionStorage.getItem('smart_hisab_google_access_token');
+    if (stored) {
+      cachedAccessToken = stored;
+      return stored;
+    }
+  } catch (e) {}
+  return null;
 }
 
 export function setCachedAccessToken(token) {
   cachedAccessToken = token;
+  try {
+    if (token) {
+      sessionStorage.setItem('smart_hisab_google_access_token', token);
+    } else {
+      sessionStorage.removeItem('smart_hisab_google_access_token');
+    }
+  } catch (e) {}
 }
 
 /**
@@ -105,12 +116,12 @@ export function initGoogleAuth(onUserAuthenticated, onUserUnauthenticated) {
       // Check authorization
       if (isEmailAuthorized(email)) {
         if (onUserAuthenticated) {
-          onUserAuthenticated(user, cachedAccessToken);
+          onUserAuthenticated(user, getCachedAccessToken());
         }
       } else {
         console.warn('Unauthorized Google account attempted access:', email);
         await signOut(firebaseAuth);
-        cachedAccessToken = null;
+        setCachedAccessToken(null);
         currentGoogleUser = null;
         if (onUserUnauthenticated) {
           onUserUnauthenticated('unauthorized_email', email);
@@ -118,7 +129,7 @@ export function initGoogleAuth(onUserAuthenticated, onUserUnauthenticated) {
       }
     } else {
       currentGoogleUser = null;
-      cachedAccessToken = null;
+      setCachedAccessToken(null);
       if (onUserUnauthenticated) {
         onUserUnauthenticated('signed_out');
       }
@@ -141,7 +152,7 @@ export async function signInWithGoogle() {
 
     if (!isEmailAuthorized(user.email)) {
       await signOut(firebaseAuth);
-      cachedAccessToken = null;
+      setCachedAccessToken(null);
       currentGoogleUser = null;
       const err = new Error(`অননুমোদিত অ্যাকাউন্ট: ${user.email}। শুধুমাত্র অনুমোদিত অ্যাডমিন অ্যাকাউন্ট দিয়ে সাইন ইন করুন।`);
       err.code = 'UNAUTHORIZED_ACCOUNT';
@@ -149,11 +160,11 @@ export async function signInWithGoogle() {
     }
 
     if (token) {
-      cachedAccessToken = token;
+      setCachedAccessToken(token);
     }
     currentGoogleUser = user;
 
-    return { user, accessToken: cachedAccessToken };
+    return { user, accessToken: getCachedAccessToken() };
   } catch (error) {
     console.error('Google Sign-In Error:', error);
     throw error;
@@ -164,9 +175,12 @@ export async function signInWithGoogle() {
 
 /**
  * Ensure an active OAuth Access Token exists for Drive operations
+ * If interactive is false, it returns null instead of popping up an unauthorized dialog.
  */
-export async function ensureAccessToken() {
-  if (cachedAccessToken) return cachedAccessToken;
+export async function ensureAccessToken(interactive = false) {
+  const existing = getCachedAccessToken();
+  if (existing) return existing;
+  if (!interactive) return null;
   const res = await signInWithGoogle();
   return res?.accessToken || null;
 }
@@ -177,7 +191,7 @@ export async function ensureAccessToken() {
 export async function signOutFromGoogle() {
   try {
     await signOut(firebaseAuth);
-    cachedAccessToken = null;
+    setCachedAccessToken(null);
     currentGoogleUser = null;
     sessionStorage.removeItem('smart_hisab_unlocked');
   } catch (err) {

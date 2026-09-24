@@ -127,6 +127,38 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     showPasscodeGate();
   }
+
+  // Cross-browser & cross-device auto-sync when tab gains focus or becomes visible
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && isSessionUnlocked) {
+      triggerBackgroundSync();
+    }
+  });
+
+  window.addEventListener('focus', () => {
+    if (isSessionUnlocked) {
+      triggerBackgroundSync();
+    }
+  });
+
+  // Cross-tab real-time sync via BroadcastChannel
+  if (typeof BroadcastChannel !== 'undefined') {
+    try {
+      const syncChannel = new BroadcastChannel('smart_hisab_sync_channel');
+      syncChannel.onmessage = (event) => {
+        if (event.data?.type === 'STATUS_UPDATED' || event.data?.type === 'DATA_MUTATED') {
+          triggerBackgroundSync();
+        }
+      };
+    } catch (e) {}
+  }
+
+  // Periodic background sync every 30 seconds
+  setInterval(() => {
+    if (isSessionUnlocked && document.visibilityState === 'visible') {
+      triggerBackgroundSync();
+    }
+  }, 30000);
 });
 
 /**
@@ -2601,23 +2633,61 @@ function getFormFieldsHtml(sheet, record = null, defaultType = null) {
           <input type="number" id="f_Earned" class="form-input font-mono" style="font-weight: 700; color: var(--cyan-cyber);" placeholder="0" value="${record ? (record.Earned || '') : ''}" />
         </div>
 
-        <!-- 📸 Image File Attachment Picker -->
+        <!-- 📸 Image Attachment Options (Phone Storage, Camera, Google Photos) -->
         <div class="form-group">
-          <label class="form-label">কাজের স্যাম্পল ছবি (Drive Storage):</label>
-          <div class="image-upload-box" onclick="document.getElementById('f_prodImage').click()">
-            <input type="file" id="f_prodImage" accept="image/*" capture="environment" style="display: none;" onchange="window.SmartHisab.handleImageSelected(event)" />
-            <div id="imageUploadPlaceholder">
-              <span style="font-size: 1.5rem;">📷</span>
-              <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">ক্লিক করে ক্যামেরা দিয়ে ছবি তুলুন বা ফাইল সিলেক্ট করুন</p>
-              <span style="font-size: 0.72rem; color: var(--cyan-cyber); font-family: var(--font-mono);">[অটোমেটিক কম্প্রেসড ও Drive এ আপলোড হবে]</span>
+          <label class="form-label" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span>কাজের স্যাম্পল ছবি (Drive Storage):</span>
+            <span style="font-size: 0.72rem; color: var(--text-muted); font-weight: 400;">Google Drive এ স্থায়ীভাবে সংরক্ষিত হবে</span>
+          </label>
+
+          <!-- Hidden Native File Inputs -->
+          <input type="file" id="f_prodImageStorage" accept="image/*" style="display: none;" onchange="window.SmartHisab.handleImageSelected(event)" />
+          <input type="file" id="f_prodImageCamera" accept="image/*" capture="environment" style="display: none;" onchange="window.SmartHisab.handleImageSelected(event)" />
+
+          <!-- Attachment Options Selector Card -->
+          <div class="image-upload-options-card" style="background: var(--bg-input); border: 1.5px dashed var(--border-subtle); border-radius: var(--radius-sm); padding: 14px;">
+            <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 10px; text-align: center;">
+              ছবি যুক্ত করার অপশন বেছে নিন:
             </div>
-            <div id="imagePreviewBox" style="display: ${record && record.Image_URL ? 'block' : 'none'};">
-              <div class="image-preview-wrapper">
-                <img id="attachedImgThumb" src="${record ? (record.Image_URL || '') : ''}" alt="প্রোডাকশন স্যাম্পল" />
-                <button type="button" class="img-remove-btn" onclick="window.SmartHisab.removeAttachedImage(event)">✕</button>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(105px, 1fr)); gap: 8px;">
+              <button type="button" class="btn btn-secondary" style="font-size: 0.78rem; padding: 8px 10px; border-color: rgba(66, 133, 244, 0.4); color: #8AB4F8;" onclick="document.getElementById('f_prodImageStorage').click()" title="ফোনের ফাইল ম্যানেজার, গ্যালারি বা Google Photos অ্যাপ থেকে ছবি সিলেক্ট করুন">
+                📱 ফোন স্টোরেজ
+              </button>
+              <button type="button" class="btn btn-secondary" style="font-size: 0.78rem; padding: 8px 10px; border-color: rgba(0, 242, 157, 0.4); color: var(--green-electric);" onclick="document.getElementById('f_prodImageCamera').click()" title="সরাসরি ক্যামেরা দিয়ে ছবি তুলুন">
+                📷 ক্যামেরা
+              </button>
+              <button type="button" class="btn btn-secondary" style="font-size: 0.78rem; padding: 8px 10px; border-color: rgba(245, 158, 11, 0.4); color: var(--gold-neon);" onclick="window.SmartHisab.togglePhotoUrlInput()" title="Google Photos শেয়ার্ড লিঙ্ক বা ইমেজ লিঙ্ক দিয়ে ছবি আনুন">
+                🖼️ Google Photos
+              </button>
+            </div>
+
+            <!-- Inline Google Photos / URL Link Box -->
+            <div id="photoUrlInputBox" style="display: none; margin-top: 12px; padding: 10px; background: rgba(0, 210, 255, 0.05); border: 1px dashed rgba(0, 210, 255, 0.35); border-radius: var(--radius-xs);">
+              <label style="display: block; font-size: 0.72rem; color: var(--cyan-cyber); margin-bottom: 4px; font-weight: 600;">
+                Google Photos শেয়ার্ড লিঙ্ক বা ছবির URL পেস্ট করুন:
+              </label>
+              <div style="display: flex; gap: 6px;">
+                <input type="url" id="f_photoUrlInput" class="form-input" style="font-size: 0.8rem; padding: 6px 10px;" placeholder="https://photos.app.goo.gl/... বা ড্রাইভ লিঙ্ক" onkeydown="if(event.key === 'Enter'){ event.preventDefault(); window.SmartHisab.handleLoadImageFromUrl(); }" />
+                <button type="button" class="btn btn-primary" style="padding: 6px 12px; font-size: 0.8rem; white-space: nowrap;" onclick="window.SmartHisab.handleLoadImageFromUrl()">
+                  আনুন
+                </button>
+                <button type="button" class="btn btn-secondary" style="padding: 6px 8px; font-size: 0.8rem;" onclick="window.SmartHisab.togglePhotoUrlInput(false)">
+                  ✕
+                </button>
               </div>
-              <p id="imageCompressionBadge" style="font-size: 0.75rem; color: var(--green-electric); margin-top: 4px; font-family: var(--font-mono);">
-                ✓ আপলোডের জন্য প্রস্তুত
+              <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 5px;">
+                💡 Google Photos অ্যাপে ছবির <strong>Share &gt; "Create link"</strong>-এ ক্লিক করে লিংকটি এখানে পেস্ট করতে পারেন।
+              </div>
+            </div>
+
+            <!-- Image Preview Area -->
+            <div id="imagePreviewBox" style="display: ${record && record.Image_URL ? 'block' : 'none'}; margin-top: 12px; text-align: center;">
+              <div class="image-preview-wrapper" style="position: relative; display: inline-block;">
+                <img id="attachedImgThumb" src="${record ? (record.Image_URL || '') : ''}" alt="প্রোডাকশন স্যাম্পল" style="max-height: 160px; max-width: 100%; border-radius: 8px; border: 1px solid var(--border-subtle); object-fit: contain; background: #000;" />
+                <button type="button" class="img-remove-btn" onclick="window.SmartHisab.removeAttachedImage(event)" title="ছবি রিমুভ / পরিবর্তন করুন">✕</button>
+              </div>
+              <p id="imageCompressionBadge" style="font-size: 0.75rem; color: var(--green-electric); margin-top: 6px; font-family: var(--font-mono);">
+                ✓ ছবি প্রস্তুত (Google Drive এ স্বয়ংক্রিয়ভাবে সংরক্ষিত হবে)
               </p>
             </div>
           </div>
@@ -2806,34 +2876,122 @@ export async function handleImageSelected(e) {
     currentCompressedImageBase64 = base64Data;
 
     const previewBox = document.getElementById('imagePreviewBox');
-    const placeholder = document.getElementById('imageUploadPlaceholder');
     const thumb = document.getElementById('attachedImgThumb');
     const badge = document.getElementById('imageCompressionBadge');
 
     if (thumb) thumb.src = base64Data;
     if (previewBox) previewBox.style.display = 'block';
-    if (placeholder) placeholder.style.display = 'none';
-    if (badge) badge.textContent = '✓ অপটিমাইজড (~70% Quality, Base64 Ready)';
+    if (badge) badge.textContent = '✓ ছবি অপটিমাইজড ও আপলোডের জন্য প্রস্তুত';
 
-    showToast('ছবি সফলভাবে যুক্ত হয়েছে', 'success');
+    showToast('✓ ছবি সফলভাবে সিলেক্ট হয়েছে', 'success');
   } catch (err) {
     showToast('ইমেজ প্রক্রিয়াকরণ ত্রুটি: ' + err.message, 'error');
   }
 }
 
+export function togglePhotoUrlInput(forceState = null) {
+  const box = document.getElementById('photoUrlInputBox');
+  if (!box) return;
+  const isVisible = box.style.display !== 'none';
+  const next = forceState !== null ? forceState : !isVisible;
+  box.style.display = next ? 'block' : 'none';
+  if (next) {
+    const input = document.getElementById('f_photoUrlInput');
+    if (input) setTimeout(() => input.focus(), 50);
+  }
+}
+
+/**
+ * Load image from Google Photos share link or web image URL
+ */
+export async function handleLoadImageFromUrl() {
+  const input = document.getElementById('f_photoUrlInput');
+  const rawUrl = input?.value?.trim();
+  if (!rawUrl) {
+    showToast('দয়া করে Google Photos বা ছবির একটি লিঙ্ক দিন', 'warning');
+    return;
+  }
+
+  showToast('ছবির লিঙ্ক প্রসেস করা হচ্ছে...', 'info');
+
+  try {
+    // Check if Google Drive link and convert to direct preview thumbnail
+    const driveId = extractDriveFileId(rawUrl);
+    let targetUrl = rawUrl;
+    if (driveId) {
+      targetUrl = `https://drive.google.com/thumbnail?id=${driveId}&sz=s1000`;
+    }
+
+    // Load image into canvas for high-performance offline base64 compression
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+
+    const loadedData = await new Promise((resolve) => {
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          let width = img.naturalWidth || img.width;
+          let height = img.naturalHeight || img.height;
+          const maxDim = 800;
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.75));
+        } catch (canvasErr) {
+          console.warn('Canvas export fallback to direct URL:', canvasErr);
+          resolve(targetUrl);
+        }
+      };
+      img.onerror = () => {
+        // Direct image URL fallback
+        resolve(targetUrl);
+      };
+      img.src = targetUrl;
+    });
+
+    currentCompressedImageBase64 = (typeof loadedData === 'string' && loadedData.startsWith('data:image')) ? loadedData : null;
+
+    const previewBox = document.getElementById('imagePreviewBox');
+    const thumb = document.getElementById('attachedImgThumb');
+    const badge = document.getElementById('imageCompressionBadge');
+
+    if (thumb) thumb.src = loadedData;
+    if (previewBox) previewBox.style.display = 'block';
+    if (badge) badge.textContent = '✓ Google Photos / লিঙ্ক থেকে ছবি লোড হয়েছে';
+
+    showToast('✓ ছবি সফলভাবে লোড হয়েছে!', 'success');
+    togglePhotoUrlInput(false);
+  } catch (err) {
+    showToast('ছবি লোড করতে সমস্যা হয়েছে: ' + err.message, 'error');
+  }
+}
+
 export function removeAttachedImage(e) {
-  e.stopPropagation();
+  if (e && e.stopPropagation) e.stopPropagation();
   currentCompressedImageBase64 = null;
-  const fileInput = document.getElementById('f_prodImage');
-  if (fileInput) fileInput.value = '';
+  const storageInput = document.getElementById('f_prodImageStorage');
+  if (storageInput) storageInput.value = '';
+  const cameraInput = document.getElementById('f_prodImageCamera');
+  if (cameraInput) cameraInput.value = '';
+  const urlInput = document.getElementById('f_photoUrlInput');
+  if (urlInput) urlInput.value = '';
 
   const previewBox = document.getElementById('imagePreviewBox');
-  const placeholder = document.getElementById('imageUploadPlaceholder');
   const thumb = document.getElementById('attachedImgThumb');
 
   if (thumb) thumb.src = '';
   if (previewBox) previewBox.style.display = 'none';
-  if (placeholder) placeholder.style.display = 'block';
+  showToast('ছবি রিমুভ করা হয়েছে', 'info');
 }
 
 /**
@@ -2890,19 +3048,19 @@ export async function submitSheetForm() {
       newRow.Received = Number(document.getElementById('f_Received')?.value) || 0;
     }
 
-    // Image handling with Google Drive Cloud Upload & Local Cache
+    // Image handling with Google Drive Cloud Upload & Local Cache (Frictionless, No Repeated Permission Popups)
     if (currentCompressedImageBase64) {
       newRow.Image_URL = currentCompressedImageBase64; // local preview immediate fallback
       newRow.Image_Base64 = currentCompressedImageBase64;
       saveImageToCache(newRow.ID, currentCompressedImageBase64);
 
-      try {
-        const token = await ensureAccessToken();
-        if (token) {
-          showToast('☁️ Google Drive এ স্থায়ীভাবে ছবি আপলোড হচ্ছে...', 'info');
+      // Only attempt direct client Drive upload if token is ALREADY cached in memory/session (never popup!)
+      const activeToken = getCachedAccessToken();
+      if (activeToken) {
+        try {
           const cleanName = (newRow['Work Name'] || 'Production').replace(/[^a-zA-Z0-9_\u0980-\u09FF]/g, '_');
           const fileName = `SmartHisab_${cleanName}_${recordId}.jpg`;
-          const driveUpload = await uploadImageToDrive(currentCompressedImageBase64, fileName, token, {
+          const driveUpload = await uploadImageToDrive(currentCompressedImageBase64, fileName, activeToken, {
             recordId,
             workName: newRow['Work Name'] || ''
           });
@@ -2911,16 +3069,12 @@ export async function submitSheetForm() {
             newRow.Image_URL = driveUpload.directImageUrl;
             newRow.DriveFileId = driveUpload.fileId;
             newRow.DriveWebViewLink = driveUpload.webViewLink;
-            // CRITICAL: Preserve Image_Base64 for zero-delay offline rendering in this browser
-            newRow.Image_Base64 = currentCompressedImageBase64;
             saveImageToCache(newRow.ID, currentCompressedImageBase64);
             saveImageToCache(driveUpload.fileId, currentCompressedImageBase64);
-            showToast('✓ Google Drive এ স্থায়ীভাবে ছবি সংরক্ষণ সম্পন্ন!', 'success');
           }
+        } catch (driveErr) {
+          console.warn('Direct client Drive upload notice (Apps Script backend will handle upload):', driveErr);
         }
-      } catch (driveErr) {
-        console.warn('Google Drive direct upload error:', driveErr);
-        showToast('Google Drive আপলোড সতর্কতা: ' + (driveErr.message || 'লোকাল ব্যাকআপ নেওয়া হয়েছে'), 'warning');
       }
     } else {
       newRow.Image_URL = (isEdit && editingRecord.record.Image_URL) ? editingRecord.record.Image_URL : '';
@@ -3242,6 +3396,14 @@ export async function toggleRecordPending(sheet, id) {
   // Sync mutation to Google Sheets backend
   sendMutation('update', sheet, record);
 
+  // Broadcast cross-tab and cross-window sync
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const syncChannel = new BroadcastChannel('smart_hisab_sync_channel');
+      syncChannel.postMessage({ type: 'STATUS_UPDATED', sheet, id, isPending: newPending });
+    }
+  } catch (e) {}
+
   showToast(newPending ? '⏳ ট্রানজেকশনটি পেন্ডিং হিসেবে মার্ক করা হয়েছে' : '✓ ট্রানজেকশনটি সম্পন্ন হিসেবে মার্ক করা হয়েছে', 'success');
 
   // Re-render UI and refresh active modal
@@ -3270,11 +3432,11 @@ export async function handleImageError(imgEl, fileId, recordId) {
     return;
   }
 
-  // 2. Try Google Drive authenticated fetch via Drive API v3
+  // 2. Try Google Drive authenticated fetch via Drive API v3 (only if already cached, never popup)
   const cleanId = fileId || extractDriveFileId(imgEl.getAttribute('data-original-src') || imgEl.src);
   if (cleanId) {
     try {
-      const token = getCachedAccessToken() || await ensureAccessToken();
+      const token = getCachedAccessToken();
       if (token) {
         const blob = await fetchDriveImageBlob(cleanId, token);
         if (blob) {
@@ -3434,6 +3596,8 @@ window.SmartHisab = {
   toggleProductionFields,
   handleImageSelected,
   removeAttachedImage,
+  togglePhotoUrlInput,
+  handleLoadImageFromUrl,
 
   // Detail Modal
   openRecordDetailModal,

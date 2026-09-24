@@ -594,13 +594,26 @@ function doPost(e) {
         }
       }
 
-      const rowValues = headers.map(header => {
+      // Get actual sheet headers from row 1 to guarantee exact column mapping
+      let actualHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), headers.length)).getValues()[0].filter(Boolean);
+      if (!actualHeaders || actualHeaders.length === 0) {
+        actualHeaders = headers;
+      }
+      
+      // Ensure 'Status' column exists on the sheet
+      if (!actualHeaders.includes('Status')) {
+        const nextCol = sheet.getLastColumn() + 1;
+        sheet.getRange(1, nextCol).setValue('Status').setFontWeight('bold').setBackground('#080B10').setFontColor('#FFC72C');
+        actualHeaders.push('Status');
+      }
+
+      const rowValues = actualHeaders.map(header => {
         let val = record[header];
         if (val === undefined || val === null) return '';
         return val;
       });
 
-      sheet.getRange(foundRow, 1, 1, headers.length).setValues([rowValues]);
+      sheet.getRange(foundRow, 1, 1, actualHeaders.length).setValues([rowValues]);
       return createJsonResponse({
         success: true,
         status: 'success',
