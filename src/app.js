@@ -24,7 +24,9 @@ import {
   setStoredPasscode,
   getStoredTheme,
   setStoredTheme,
-  DEFAULT_PASSCODE
+  DEFAULT_PASSCODE,
+  formatTime12,
+  calculateTimeDuration
 } from './data.js';
 
 import {
@@ -43,11 +45,14 @@ import {
   signOutFromGoogle,
   getCurrentGoogleUser,
   getCachedAccessToken,
+  setCachedAccessToken,
   ensureAccessToken,
   isEmailAuthorized,
   getAuthorizedEmails,
   saveAuthorizedEmails,
-  DEFAULT_ADMIN_EMAIL
+  DEFAULT_ADMIN_EMAIL,
+  isDriveConnected,
+  connectGoogleDrive
 } from './auth.js';
 
 import {
@@ -69,14 +74,197 @@ let historySearchQuery = '';
 let areaWaveChartInstance = null;
 let editingRecord = null; // { sheet, data }
 let currentCompressedImageBase64 = null;
+let currentDriveUploadResult = null; // { fileId, directImageUrl, webViewLink }
+let isUploadingToDrive = false;
 
 // Production Tab Filtering State
 let productionTypeFilter = 'all'; // 'all' | 'work' | 'withdrawal' | 'pending'
+let productionTagFilter = 'all'; // 'all' | 'শার্ট' | 'গোলগোলা' | 'প্যান্ট' | 'কটি' | 'অন্যান্য'
 let productionSearchQuery = '';
 let productionDateRange = 'all'; // 'all' | 'thisMonth' | 'lastMonth' | 'today' | 'custom' | 'month'
 let productionMonthFilter = ''; // e.g. '2026-09'
 let productionStartDate = '';
 let productionEndDate = '';
+
+export const PRODUCTION_TAGS = ['শার্ট', 'গোলগোলা', 'প্যান্ট', 'কটি', 'অন্যান্য'];
+export const TAG_ICONS = {
+  'শার্ট': '👔',
+  'গোলগোলা': '👕',
+  'প্যান্ট': '👖',
+  'কটি': '🦺',
+  'অন্যান্য': '🏷️'
+};
+export const TAG_CLASSES = {
+  'শার্ট': 'tag-shirt',
+  'গোলগোলা': 'tag-golgola',
+  'প্যান্ট': 'tag-pant',
+  'কটি': 'tag-koti',
+  'অন্যান্য': 'tag-other'
+};
+
+const BENGALI_DIGITS_MAP = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+export function toBengaliDigits(num) {
+  if (num === null || num === undefined) return '';
+  return String(num).replace(/[0-9]/g, d => BENGALI_DIGITS_MAP[Number(d)] || d);
+}
+
+const BENGALI_DAY_NAMES = ['রবিবার', 'সোমবার', 'মঙ্গলবার', 'বুধবার', 'বৃহস্পতিবার', 'শুক্রবার', 'শনিবার'];
+
+export function getBengaliDayName(dateObj) {
+  if (!dateObj || isNaN(dateObj.getTime())) return '';
+  return BENGALI_DAY_NAMES[dateObj.getDay()] || '';
+}
+
+export function formatBengaliTime12(hours, minutes) {
+  let period = 'সকাল';
+  if (hours >= 4 && hours < 12) {
+    period = 'সকাল';
+  } else if (hours >= 12 && hours < 15) {
+    period = 'দুপুর';
+  } else if (hours >= 15 && hours < 18) {
+    period = 'বিকাল';
+  } else if (hours >= 18 && hours < 20) {
+    period = 'সন্ধ্যা';
+  } else {
+    period = 'রাত';
+  }
+
+  let h12 = hours % 12;
+  if (h12 === 0) h12 = 12;
+
+  const mStr = String(minutes).padStart(2, '0');
+  return `${period} ${toBengaliDigits(h12)}:${toBengaliDigits(mStr)}`;
+}
+
+export function formatProductionTimeRange(p) {
+  if (!p) return '';
+  const startTime = p['Start Time'] || p.StartTime || '';
+  const endTime = p['End Time'] || p.EndTime || '';
+  const startDateStr = p['Start Date'] || p.StartDate || p.Date || '';
+  const endDateStr = p['End Date'] || p.EndDate || '';
+
+  // If neither start nor end time is set
+  if (!startTime && !endTime) {
+    if (p.Duration) {
+      return `সময়কাল: ${p.Duration}`;
+    }
+    return '';
+  }
+
+  // Parse Start Date & Time
+  let startDayName = '';
+  let startTimeFormatted = '';
+  let startDt = null;
+
+  if (startDateStr) {
+    startDt = new Date(startDateStr + 'T' + (startTime || '00:00') + ':00');
+    if (!isNaN(startDt.getTime())) {
+      startDayName = getBengaliDayName(startDt);
+    }
+  }
+
+  if (startTime) {
+    const [h, m] = startTime.split(':').map(Number);
+    startTimeFormatted = formatBengaliTime12(h || 0, m || 0);
+  }
+
+  const startPart = `${startDayName ? startDayName + ' ' : ''}${startTimeFormatted}`.trim();
+
+  // If only start time is set (ongoing job)
+  if (!endTime) {
+    return `শুরু - ${startPart || 'নির্ধারিত সময়'} (চলমান ⏳)`;
+  }
+
+  // Resolve End Date
+  let resolvedEndDateStr = endDateStr;
+  if (!resolvedEndDateStr && startDateStr) {
+    if (startTime && endTime) {
+      const [sh, sm] = startTime.split(':').map(Number);
+      const [eh, em] = endTime.split(':').map(Number);
+      if (eh < sh || (eh === sh && em < sm)) {
+        const nextD = new Date(startDateStr + 'T12:00:00');
+        nextD.setDate(nextD.getDate() + 1);
+        resolvedEndDateStr = nextD.toISOString().split('T')[0];
+      } else {
+        resolvedEndDateStr = startDateStr;
+      }
+    } else {
+      resolvedEndDateStr = startDateStr;
+    }
+  }
+
+  let endDayName = '';
+  let endTimeFormatted = '';
+  let endDt = null;
+
+  if (resolvedEndDateStr) {
+    endDt = new Date(resolvedEndDateStr + 'T' + endTime + ':00');
+    if (!isNaN(endDt.getTime())) {
+      endDayName = getBengaliDayName(endDt);
+    }
+  }
+
+  const [eh, em] = endTime.split(':').map(Number);
+  endTimeFormatted = formatBengaliTime12(eh || 0, em || 0);
+
+  const endPart = `${endDayName ? endDayName + ' ' : ''}${endTimeFormatted}`.trim();
+
+  // Calculate Duration
+  let durationFormatted = '';
+  if (p.Duration && (p.Duration.includes('দিন') || p.Duration.includes('ঘণ্টা') || p.Duration.includes('মিনিট'))) {
+    durationFormatted = p.Duration;
+  } else if (startDt && endDt && endDt.getTime() >= startDt.getTime()) {
+    const diffMs = endDt.getTime() - startDt.getTime();
+    const totalMinutes = Math.floor(diffMs / (60 * 1000));
+    const days = Math.floor(totalMinutes / (24 * 60));
+    const remMins = totalMinutes % (24 * 60);
+    const hours = Math.floor(remMins / 60);
+    const mins = remMins % 60;
+
+    const durParts = [];
+    if (days > 0) durParts.push(`${toBengaliDigits(days)} দিন`);
+    if (hours > 0) durParts.push(`${toBengaliDigits(hours)} ঘণ্টা`);
+    if (mins > 0 || durParts.length === 0) durParts.push(`${toBengaliDigits(mins)} মিনিট`);
+    durationFormatted = durParts.join(' ');
+  } else if (startTime && endTime) {
+    const [sh, sm] = startTime.split(':').map(Number);
+    let totalMins = (eh * 60 + em) - (sh * 60 + sm);
+    if (totalMins < 0) totalMins += 24 * 60;
+    const hours = Math.floor(totalMins / 60);
+    const mins = totalMins % 60;
+    const durParts = [];
+    if (hours > 0) durParts.push(`${toBengaliDigits(hours)} ঘণ্টা`);
+    if (mins > 0 || durParts.length === 0) durParts.push(`${toBengaliDigits(mins)} মিনিট`);
+    durationFormatted = durParts.join(' ');
+  }
+
+  return `শুরু - ${startPart}, শেষ - ${endPart}${durationFormatted ? ' (' + durationFormatted + ')' : ''}`;
+}
+
+export function getProductionItemTag(item) {
+  if (item && item.Tag) {
+    const raw = String(item.Tag).trim();
+    if (PRODUCTION_TAGS.includes(raw)) return raw;
+    if (raw.includes('গোলগোলা') || raw.includes('গোল গলা') || raw.includes('গোল-গলা')) return 'গোলগোলা';
+    if (raw.includes('শার্ট')) return 'শার্ট';
+    if (raw.includes('প্যান্ট')) return 'প্যান্ট';
+    if (raw.includes('কটি') || raw.includes('কোট')) return 'কটি';
+    return 'অন্যান্য';
+  }
+  if (item && item.Note && item.Note.includes('[ট্যাগ:')) {
+    const match = item.Note.match(/\[ট্যাগ:\s*([^\]]+)\]/);
+    if (match && match[1]) {
+      const t = match[1].trim();
+      if (PRODUCTION_TAGS.includes(t)) return t;
+    }
+  }
+  const name = String(item?.['Work Name'] || '').toLowerCase();
+  if (name.includes('গোলগোলা') || name.includes('গোল গলা') || name.includes('গোল-গলা')) return 'গোলগোলা';
+  if (name.includes('শার্ট') || name.includes('shirt')) return 'শার্ট';
+  if (name.includes('প্যান্ট') || name.includes('pant') || name.includes('trouser')) return 'প্যান্ট';
+  if (name.includes('কটি') || name.includes('koti') || name.includes('vest') || name.includes('কোটি')) return 'কটি';
+  return 'অন্যান্য';
+}
 
 // Passcode & Auth Gate State
 let enteredPin = '';
@@ -312,9 +500,8 @@ export function showPasscodeGate() {
     screen.style.display = 'flex';
   }
   const quickPin = document.getElementById('quickPinSection');
-  const user = getCurrentGoogleUser();
   if (quickPin) {
-    quickPin.style.display = user ? 'block' : 'none';
+    quickPin.style.display = 'block';
   }
   const err = document.getElementById('passcodeError');
   if (err) err.textContent = '';
@@ -1407,7 +1594,23 @@ function getFilteredProductionData() {
     }
   }
 
-  // 3. Search Filter
+  // Base list before tag filtering for tag counts
+  const baseForTags = [...prods];
+  const tagCounts = {
+    all: baseForTags.length,
+    'শার্ট': baseForTags.filter(p => getProductionItemTag(p) === 'শার্ট').length,
+    'গোলগোলা': baseForTags.filter(p => getProductionItemTag(p) === 'গোলগোলা').length,
+    'প্যান্ট': baseForTags.filter(p => getProductionItemTag(p) === 'প্যান্ট').length,
+    'কটি': baseForTags.filter(p => getProductionItemTag(p) === 'কটি').length,
+    'অন্যান্য': baseForTags.filter(p => getProductionItemTag(p) === 'অন্যান্য').length
+  };
+
+  // 3. Filter by Tag: all | 'শার্ট' | 'গোলগোলা' | 'প্যান্ট' | 'কটি' | 'অন্যান্য'
+  if (productionTagFilter !== 'all') {
+    prods = prods.filter(p => getProductionItemTag(p) === productionTagFilter);
+  }
+
+  // 4. Search Filter
   if (productionSearchQuery && productionSearchQuery.trim()) {
     const q = productionSearchQuery.trim().toLowerCase();
     prods = prods.filter(p =>
@@ -1416,7 +1619,8 @@ function getFilteredProductionData() {
       String(p.Color || '').toLowerCase().includes(q) ||
       String(p.Note || '').toLowerCase().includes(q) ||
       String(p.ID || '').toLowerCase().includes(q) ||
-      String(p.Pcs || '').toLowerCase().includes(q)
+      String(p.Pcs || '').toLowerCase().includes(q) ||
+      String(getProductionItemTag(p)).toLowerCase().includes(q)
     );
   }
 
@@ -1427,11 +1631,11 @@ function getFilteredProductionData() {
   const filteredEarned = prods.filter(p => p.Type === 'Work').reduce((s, p) => s + (Number(p.Earned) || 0), 0);
   const filteredWithdrawn = prods.filter(p => p.Type === 'Withdrawal').reduce((s, p) => s + (Number(p.Received) || Number(p.Amount) || 0), 0);
 
-  return { prods, prodPendingCount, filteredEarned, filteredWithdrawn };
+  return { prods, prodPendingCount, filteredEarned, filteredWithdrawn, tagCounts };
 }
 
 /**
- * Render individual production cards without blowing away search input
+ * Render individual production cards with high-contrast, structured layout & full time format
  */
 function renderProductionCardsHtml(prods) {
   if (prods.length === 0) {
@@ -1451,84 +1655,139 @@ function renderProductionCardsHtml(prods) {
     const formattedImg = formatImageUrl(rawImg, p.ID);
     const driveFileId = extractDriveFileId(p.Image_URL) || p.DriveFileId || '';
     const relativeTime = formatRelativeTime(p.UpdatedAt || p.Date);
-
-    // Compact Subtitle
-    let subtitleHtml = '';
-    if (isWork) {
-      const parts = [];
-      if (p.Size && p.Size !== '-') parts.push(`সাইজ: <strong>${p.Size}</strong>`);
-      if (p.Color && p.Color !== '-') parts.push(`কালার: <strong>${p.Color}</strong>`);
-      parts.push(`${p.Pcs || 0} pcs`);
-      if (p.Dozen) parts.push(`(${p.Dozen} ডজন @ ৳${p.Rate || 0})`);
-      subtitleHtml = parts.join(' • ');
-      if (p.Note) subtitleHtml += ` • <em>${p.Note}</em>`;
-    } else {
-      subtitleHtml = p.Note ? `<em>${p.Note}</em>` : 'কারিগর বিল ক্যাশ গ্রহণ / উত্তোলন';
-    }
-
     const isPending = Boolean(p.IsPending || p.Status === 'Pending');
 
+    // Tag resolution
+    const tag = getProductionItemTag(p);
+    const tagIcon = TAG_ICONS[tag] || '🏷️';
+    const tagClass = TAG_CLASSES[tag] || 'tag-other';
+
+    // Formatted time range
+    const timeRangeStr = formatProductionTimeRange(p);
+
+    // Bengali Day for Date chip
+    let dayOfWeekStr = '';
+    if (p.Date) {
+      const dt = new Date(p.Date + 'T00:00:00');
+      if (!isNaN(dt.getTime())) {
+        const shortDays = ['রবি', 'সোম', 'মঙ্গল', 'বুধ', 'বৃহঃ', 'শুক্র', 'শনি'];
+        dayOfWeekStr = shortDays[dt.getDay()] || '';
+      }
+    }
+
     return `
-      <div class="prod-card-spacious ${isPending ? 'is-pending' : ''}" onclick="window.SmartHisab.openRecordDetailModal('production', '${p.ID}')" title="সম্পূর্ণ বিবরণ দেখতে ট্যাপ করুন">
-        <!-- Left: Large Prominent Photo / Icon -->
-        <div class="prod-photo-side" onclick="event.stopPropagation(); window.SmartHisab.openImagePreview('${formattedImg}', '${(p['Work Name'] || 'প্রোডাকশন ছবি').replace(/'/g, "\\'")}', '${p.Image_URL || ''}')" title="${hasImg ? 'বড় করে ছবি দেখুন' : ''}">
-          ${hasImg ? `
-            <img src="${formattedImg}" 
-                 data-file-id="${driveFileId}" 
-                 data-record-id="${p.ID}" 
-                 data-original-src="${p.Image_URL || ''}" 
-                 class="prod-photo-img" 
-                 alt="ছবি" 
-                 loading="lazy" 
-                 referrerpolicy="no-referrer" 
-                 onerror="window.SmartHisab.handleImageError(this, '${driveFileId}', '${p.ID}')" />
-            <span class="prod-photo-zoom-hint" title="বড় করে দেখুন">🔍</span>
-          ` : `
-            <div class="prod-photo-placeholder">
-              <span class="prod-photo-icon">${isWork ? '🏭' : '💸'}</span>
-            </div>
-          `}
-        </div>
-
-        <!-- Right: 3 Clean, Well-Spaced Rows -->
-        <div class="prod-content-side">
-          <!-- Row 1: Date Chip, Type Badge, and Amount Aligned Right -->
-          <div class="prod-line-1">
-            <div class="prod-line-1-left">
-              <span class="prod-date-chip" title="${dateObj.full}">${dateObj.dateNum}</span>
-              <span class="badge-term ${isWork ? 'badge-work' : 'badge-withdrawal'} prod-badge">
-                ${isWork ? 'মজুরি' : 'উত্তোলন'}
+      <div class="prod-card-redesigned ${isPending ? 'is-pending' : ''}" onclick="window.SmartHisab.openRecordDetailModal('production', '${p.ID}')" title="সম্পূর্ণ বিবরণ দেখতে ট্যাপ করুন">
+        
+        <!-- Header Row: Date Chip, Tag Badge, Type Badge, Artisan & Big Net Amount -->
+        <div class="prod-card-header">
+          <div class="prod-tags-group">
+            <span class="prod-date-chip" title="${dateObj.full}">
+              📅 ${dateObj.dateNum}${dayOfWeekStr ? ' • ' + dayOfWeekStr : ''}
+            </span>
+            ${isWork ? `
+              <span class="prod-tag-pill ${tagClass}" title="ক্যাটাগরি ট্যাগ">
+                ${tagIcon} ${tag}
               </span>
-            </div>
-            <div class="prod-line-1-right">
-              ${isWork && p.Earned > 0 ? `
-                <span class="prod-amount-earned font-mono">+${formatTaka(p.Earned)}</span>
-              ` : ''}
-              ${(!isWork || p.Received > 0) ? `
-                <span class="prod-amount-withdrawn font-mono">-${formatTaka(p.Received || p.Amount || 0)}</span>
-              ` : ''}
-              ${isWork && p.Earned === 0 && (!p.Received || p.Received === 0) ? `
-                <span class="prod-amount-zero font-mono">৳০</span>
-              ` : ''}
-            </div>
+            ` : ''}
+            <span class="badge-term ${isWork ? 'badge-work' : 'badge-withdrawal'} prod-badge">
+              ${isWork ? 'মজুরি' : 'উত্তোলন'}
+            </span>
+            ${p.Artisan ? `
+              <span class="prod-artisan-chip" title="কারিগর">👤 ${p.Artisan}</span>
+            ` : ''}
+            ${isPending ? `
+              <span class="prod-pending-chip">⏳ পেন্ডিং</span>
+            ` : ''}
           </div>
 
-          <!-- Row 2: Work Name / Title (Dedicated Full Row, High Contrast, No Truncation) -->
-          <div class="prod-line-2">
-            <span class="prod-work-title">${p['Work Name'] || (isWork ? 'পোশাক কাজ' : 'বিল উত্তোলন')}</span>
-          </div>
-
-          <!-- Row 3: Specifications, Relative Time & Pending Badge -->
-          <div class="prod-line-3">
-            <div class="prod-specs-wrap">
-              <span class="prod-specs-text">${subtitleHtml}</span>
-            </div>
-            <div class="prod-meta-wrap">
-              ${relativeTime ? `<span class="prod-rel-time" title="আপডেট সময়">${relativeTime}</span>` : ''}
-              ${isPending ? `<span class="prod-pending-chip">⏳ পেন্ডিং</span>` : ''}
-            </div>
+          <div class="prod-line-1-right">
+            ${isWork && p.Earned > 0 ? `
+              <span class="prod-amount-earned font-mono">+${formatTaka(p.Earned)}</span>
+            ` : ''}
+            ${(!isWork || p.Received > 0) ? `
+              <span class="prod-amount-withdrawn font-mono">-${formatTaka(p.Received || p.Amount || 0)}</span>
+            ` : ''}
+            ${isWork && p.Earned === 0 && (!p.Received || p.Received === 0) ? `
+              <span class="prod-amount-zero font-mono">৳০</span>
+            ` : ''}
           </div>
         </div>
+
+        <!-- Body Row: Left Photo Thumbnail + Right Main Work Info & Specs -->
+        <div class="prod-card-body">
+          <div class="prod-photo-side" onclick="event.stopPropagation(); window.SmartHisab.openImagePreview('${formattedImg}', '${(p['Work Name'] || 'প্রোডাকশন ছবি').replace(/'/g, "\\'")}', '${p.Image_URL || ''}')" title="${hasImg ? 'বড় করে ছবি দেখুন' : ''}">
+            ${hasImg ? `
+              <img src="${formattedImg}" 
+                   data-file-id="${driveFileId}" 
+                   data-record-id="${p.ID}" 
+                   data-original-src="${p.Image_URL || ''}" 
+                   class="prod-photo-img" 
+                   alt="ছবি" 
+                   loading="lazy" 
+                   referrerpolicy="no-referrer" 
+                   onerror="window.SmartHisab.handleImageError(this, '${driveFileId}', '${p.ID}')" />
+              <span class="prod-photo-zoom-hint" title="বড় করে দেখুন">🔍</span>
+            ` : `
+              <div class="prod-photo-placeholder">
+                <span class="prod-photo-icon">${isWork ? (tagIcon || '🏭') : '💸'}</span>
+              </div>
+            `}
+          </div>
+
+          <div class="prod-main-info">
+            <div class="prod-work-title">
+              ${p['Work Name'] || (isWork ? 'পোশাকের কাজ' : 'বিল উত্তোলন')}
+            </div>
+
+            ${isWork ? `
+              <div class="prod-metrics-grid">
+                <span class="prod-metric-item">
+                  <span class="metric-lbl">পরিমাণ:</span> <strong>${toBengaliDigits(p.Pcs || 0)} pcs</strong> (${toBengaliDigits(p.Dozen || 0)} ডজন)
+                </span>
+                <span class="prod-metric-item">
+                  <span class="metric-lbl">দর:</span> <strong>৳${toBengaliDigits(p.Rate || 0)}</strong>/ডজন
+                </span>
+                ${p.Size && p.Size !== '-' ? `
+                  <span class="prod-metric-item">
+                    <span class="metric-lbl">সাইজ:</span> <strong>${p.Size}</strong>
+                  </span>
+                ` : ''}
+                ${p.Color && p.Color !== '-' ? `
+                  <span class="prod-metric-item">
+                    <span class="metric-lbl">কালার:</span> <strong>${p.Color}</strong>
+                  </span>
+                ` : ''}
+              </div>
+            ` : `
+              <div style="font-size: 0.8rem; color: var(--text-muted); font-family: var(--font-bangla);">
+                কারিগর বিল ক্যাশ গ্রহণ / উত্তোলন
+              </div>
+            `}
+          </div>
+        </div>
+
+        <!-- Dedicated Time Banner (Highlighted Row: শুরু - [বার সময়], শেষ - [বার সময়] ([মোট সময়])) -->
+        ${timeRangeStr ? `
+          <div class="prod-time-banner">
+            <span class="prod-time-icon">⏱️</span>
+            <span class="prod-time-text">${timeRangeStr}</span>
+          </div>
+        ` : ''}
+
+        <!-- Footer: Note & Relative Time -->
+        ${(p.Note || relativeTime) ? `
+          <div class="prod-card-footer">
+            ${p.Note ? `
+              <div class="prod-note-box">
+                <span>📝</span> ${p.Note}
+              </div>
+            ` : '<div></div>'}
+            ${relativeTime ? `
+              <div class="prod-rel-time" title="সর্বশেষ আপডেট">আপডেট: ${relativeTime}</div>
+            ` : ''}
+          </div>
+        ` : ''}
+
       </div>
     `;
   }).join('');
@@ -1583,6 +1842,11 @@ export function setProductionTypeFilter(type) {
   renderApp();
 }
 
+export function setProductionTagFilter(tag) {
+  productionTagFilter = tag;
+  renderApp();
+}
+
 export function setProductionDateRange(range) {
   productionDateRange = range;
   if (range !== 'custom') {
@@ -1614,6 +1878,7 @@ export function setProductionCustomDates(start, end) {
 
 export function clearProductionFilters() {
   productionTypeFilter = 'all';
+  productionTagFilter = 'all';
   productionDateRange = 'all';
   productionMonthFilter = '';
   productionStartDate = '';
@@ -1626,7 +1891,7 @@ export function clearProductionFilters() {
  * 3. PRODUCTION LEDGER VIEW (COMPACT ROW FEED + FILTERS + RELATIVE TIMESTAMPS)
  */
 function renderProductionView(container) {
-  const { prods, prodPendingCount, filteredEarned, filteredWithdrawn } = getFilteredProductionData();
+  const { prods, prodPendingCount, filteredEarned, filteredWithdrawn, tagCounts } = getFilteredProductionData();
 
   // Calculate totals from entire collection
   const allProds = appData.production || [];
@@ -1634,7 +1899,7 @@ function renderProductionView(container) {
   const totalWithdrawn = allProds.filter(p => p.Type === 'Withdrawal').reduce((s, p) => s + (Number(p.Received) || Number(p.Amount) || 0), 0);
   const netDue = totalEarned - totalWithdrawn;
 
-  const hasActiveFilters = productionTypeFilter !== 'all' || productionDateRange !== 'all' || Boolean(productionMonthFilter) || Boolean(productionStartDate) || Boolean(productionEndDate) || Boolean(productionSearchQuery.trim());
+  const hasActiveFilters = productionTypeFilter !== 'all' || productionTagFilter !== 'all' || productionDateRange !== 'all' || Boolean(productionMonthFilter) || Boolean(productionStartDate) || Boolean(productionEndDate) || Boolean(productionSearchQuery.trim());
 
   container.innerHTML = `
     <!-- Top Summary Banner -->
@@ -1651,12 +1916,12 @@ function renderProductionView(container) {
       </div>
     </div>
 
-    <!-- Production Filter Controls: Search Bar + Type Toggle + Date Range Picker -->
+    <!-- Production Filter Controls: Search Bar + Type Toggle + Tag Filters + Date Range Picker -->
     <div class="terminal-card" style="padding: 14px 16px; margin-bottom: 16px;">
       <div style="display: flex; flex-direction: column; gap: 12px;">
         <!-- Row 1: Search Bar -->
         <div style="position: relative; width: 100%;">
-          <input type="text" id="productionSearchInput" class="terminal-input" placeholder="🔍 কাজের নাম, কালার, সাইজ, নোট..." value="${productionSearchQuery}" oninput="window.SmartHisab.onProductionSearchInput(this.value)" style="width: 100%; padding-right: 28px;" />
+          <input type="text" id="productionSearchInput" class="terminal-input" placeholder="🔍 কাজের নাম, ট্যাগ, কালার, সাইজ, নোট..." value="${productionSearchQuery}" oninput="window.SmartHisab.onProductionSearchInput(this.value)" style="width: 100%; padding-right: 28px;" />
           <button type="button" id="productionSearchClearBtn" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-dim); cursor: pointer; display: ${productionSearchQuery ? 'inline-flex' : 'none'}; font-size: 0.9rem;" onclick="window.SmartHisab.clearProductionSearch()">✕</button>
         </div>
 
@@ -1675,6 +1940,29 @@ function renderProductionView(container) {
             রেকর্ড: <strong style="color: var(--text-pure);">${prods.length}</strong> টি
             ${hasActiveFilters ? `(অর্জিত: <span style="color: var(--green-electric);">${formatTaka(filteredEarned)}</span>, উত্তোলন: <span style="color: var(--red-coral);">${formatTaka(filteredWithdrawn)}</span>)` : ''}
           </div>
+        </div>
+
+        <!-- Row 2.5: Tag Filter Bar (৫টি ট্যাগ: শার্ট, গোলগোলা, প্যান্ট, কটি, অন্যান্য) -->
+        <div class="prod-tag-filter-bar">
+          <span style="font-size: 0.76rem; font-family: var(--font-mono); color: var(--text-muted); margin-right: 4px;">ট্যাগ ফিল্টার:</span>
+          <button type="button" class="prod-tag-filter-pill ${productionTagFilter === 'all' ? 'active' : ''}" onclick="window.SmartHisab.setProductionTagFilter('all')">
+            ✨ সব (${toBengaliDigits(tagCounts.all)})
+          </button>
+          <button type="button" class="prod-tag-filter-pill ${productionTagFilter === 'শার্ট' ? 'active' : ''}" data-tag="শার্ট" onclick="window.SmartHisab.setProductionTagFilter('শার্ট')">
+            👔 শার্ট (${toBengaliDigits(tagCounts['শার্ট'])})
+          </button>
+          <button type="button" class="prod-tag-filter-pill ${productionTagFilter === 'গোলগোলা' ? 'active' : ''}" data-tag="গোলগোলা" onclick="window.SmartHisab.setProductionTagFilter('গোলগোলা')">
+            👕 গোলগোলা (${toBengaliDigits(tagCounts['গোলগোলা'])})
+          </button>
+          <button type="button" class="prod-tag-filter-pill ${productionTagFilter === 'প্যান্ট' ? 'active' : ''}" data-tag="প্যান্ট" onclick="window.SmartHisab.setProductionTagFilter('প্যান্ট')">
+            👖 প্যান্ট (${toBengaliDigits(tagCounts['প্যান্ট'])})
+          </button>
+          <button type="button" class="prod-tag-filter-pill ${productionTagFilter === 'কটি' ? 'active' : ''}" data-tag="কটি" onclick="window.SmartHisab.setProductionTagFilter('কটি')">
+            🦺 কটি (${toBengaliDigits(tagCounts['কটি'])})
+          </button>
+          <button type="button" class="prod-tag-filter-pill ${productionTagFilter === 'অন্যান্য' ? 'active' : ''}" data-tag="অন্যান্য" onclick="window.SmartHisab.setProductionTagFilter('অন্যান্য')">
+            🏷️ অন্যান্য (${toBengaliDigits(tagCounts['অন্যান্য'])})
+          </button>
         </div>
 
         <!-- Row 3: Date Range & Custom Picker -->
@@ -1996,12 +2284,21 @@ function renderSettingsView(container) {
 
         <!-- Google Actions -->
         <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px;">
-          <button type="button" class="btn btn-secondary" onclick="window.SmartHisab.openGoogleDriveFolder()">
-            📁 Google Drive ফোল্ডার ওপেন করুন
-          </button>
-          <button type="button" class="btn btn-secondary" style="border-color: rgba(255, 59, 105, 0.4); color: var(--red-coral);" onclick="window.SmartHisab.handleGoogleLogout()">
-            🚪 Google অ্যাকাউন্ট সাইন আউট করুন
-          </button>
+          ${!user ? `
+            <button type="button" class="btn btn-primary" onclick="window.SmartHisab.connectGoogleDriveFromSettings()" style="display: flex; align-items: center; gap: 6px;">
+              🔗 Google Drive সিঙ্ক সংযুক্ত করুন
+            </button>
+          ` : `
+            <button type="button" class="btn btn-primary" onclick="window.SmartHisab.connectGoogleDriveFromSettings()" style="display: flex; align-items: center; gap: 6px;">
+              🔄 Google Drive টোকেন রিফ্রেশ করুন
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="window.SmartHisab.openGoogleDriveFolder()">
+              📁 Google Drive ফোল্ডার ওপেন করুন
+            </button>
+            <button type="button" class="btn btn-secondary" style="border-color: rgba(255, 59, 105, 0.4); color: var(--red-coral);" onclick="window.SmartHisab.handleGoogleLogout()">
+              🚪 Google অ্যাকাউন্ট সাইন আউট করুন
+            </button>
+          `}
         </div>
 
         <!-- Authorized Emails Whitelist -->
@@ -2311,6 +2608,8 @@ export function resetToDemoData() {
 export function openAddModal(sheet, defaultType = null) {
   editingRecord = null;
   currentCompressedImageBase64 = null;
+  currentDriveUploadResult = null;
+  isUploadingToDrive = false;
   const modal = document.getElementById('bottomSheetModal');
   const overlay = document.getElementById('modalOverlay');
   const title = document.getElementById('sheetModalTitle');
@@ -2348,6 +2647,12 @@ export function openEditModal(sheet, id) {
 
   editingRecord = { sheet, record };
   currentCompressedImageBase64 = null;
+  currentDriveUploadResult = record.Image_URL ? {
+    directImageUrl: record.Image_URL,
+    fileId: record.DriveFileId || extractDriveFileId(record.Image_URL),
+    webViewLink: record.DriveWebViewLink || ''
+  } : null;
+  isUploadingToDrive = false;
 
   const modal = document.getElementById('bottomSheetModal');
   const overlay = document.getElementById('modalOverlay');
@@ -2377,6 +2682,8 @@ export function closeSheetModal() {
   if (overlay) overlay.classList.remove('active');
   editingRecord = null;
   currentCompressedImageBase64 = null;
+  currentDriveUploadResult = null;
+  isUploadingToDrive = false;
 }
 
 /**
@@ -2582,6 +2889,7 @@ function getFormFieldsHtml(sheet, record = null, defaultType = null) {
 
   if (sheet === 'production') {
     const prodType = record ? record.Type : (defaultType || 'Work');
+    const selectedTag = (record && getProductionItemTag(record)) || 'শার্ট';
     return `
       <input type="hidden" id="f_Sheet" value="production" />
       <input type="hidden" id="f_ID" value="${record ? record.ID : ''}" />
@@ -2600,9 +2908,25 @@ function getFormFieldsHtml(sheet, record = null, defaultType = null) {
       </div>
 
       <div id="prodWorkFields" style="display: ${prodType === 'Work' ? 'block' : 'none'};">
+        <!-- 🏷️ ৫টি ট্যাগ নির্বাচন: শার্ট, গোলগোলা, প্যান্ট, কটি, অন্যান্য -->
+        <div class="form-group">
+          <label class="form-label" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-weight: 700; color: var(--gold-neon);">🏷️ কাজের ট্যাগ (Tag / Category):</span>
+            <span style="font-size: 0.72rem; color: var(--text-muted);">৫টি ক্যাটাগরির যেকোনো একটি বেছে নিন</span>
+          </label>
+          <div class="tag-selector-chips">
+            <button type="button" class="prod-tag-btn ${selectedTag === 'শার্ট' ? 'active' : ''}" data-tag="শার্ট" onclick="window.SmartHisab.selectProductionTag('শার্ট')">👔 শার্ট</button>
+            <button type="button" class="prod-tag-btn ${selectedTag === 'গোলগোলা' ? 'active' : ''}" data-tag="গোলগোলা" onclick="window.SmartHisab.selectProductionTag('গোলগোলা')">👕 গোলগোলা</button>
+            <button type="button" class="prod-tag-btn ${selectedTag === 'প্যান্ট' ? 'active' : ''}" data-tag="প্যান্ট" onclick="window.SmartHisab.selectProductionTag('প্যান্ট')">👖 প্যান্ট</button>
+            <button type="button" class="prod-tag-btn ${selectedTag === 'কটি' ? 'active' : ''}" data-tag="কটি" onclick="window.SmartHisab.selectProductionTag('কটি')">🦺 কটি</button>
+            <button type="button" class="prod-tag-btn ${selectedTag === 'অন্যান্য' ? 'active' : ''}" data-tag="অন্যান্য" onclick="window.SmartHisab.selectProductionTag('অন্যান্য')">🏷️ অন্যান্য</button>
+          </div>
+          <input type="hidden" id="f_Tag" value="${selectedTag}" />
+        </div>
+
         <div class="form-group">
           <label class="form-label">কাজের নাম (Work Name):</label>
-          <input type="text" id="f_WorkName" class="form-input" placeholder="যেমন: পোলো শার্ট, ড্রপ শোল্ডার" value="${record ? (record['Work Name'] || '') : ''}" />
+          <input type="text" id="f_WorkName" class="form-input" placeholder="যেমন: পোলো শার্ট, গোল গলা টি-শার্ট, চিনো প্যান্ট" value="${record ? (record['Work Name'] || '') : ''}" oninput="window.SmartHisab.onWorkNameInput(this.value)" />
         </div>
         <div class="form-grid-2">
           <div class="form-group">
@@ -2633,12 +2957,94 @@ function getFormFieldsHtml(sheet, record = null, defaultType = null) {
           <input type="number" id="f_Earned" class="form-input font-mono" style="font-weight: 700; color: var(--cyan-cyber);" placeholder="0" value="${record ? (record.Earned || '') : ''}" />
         </div>
 
+        <!-- ⏱️ কাজের শুরু ও শেষ সময় (Work Start & End Time) -->
+        <div class="form-group" style="background: rgba(0, 242, 157, 0.04); border: 1px solid rgba(0, 242, 157, 0.25); border-radius: var(--radius-sm); padding: 12px 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <label class="form-label" style="margin: 0; color: var(--green-electric); font-weight: 700; display: flex; align-items: center; gap: 6px;">
+              <span>⏱️ কাজের সময়কাল (Start & End Time)</span>
+            </label>
+            <span id="prodDurationBadge" style="font-size: 0.76rem; font-family: var(--font-mono); color: var(--gold-neon); font-weight: 700;">
+              ${record && (record['Duration'] || record.Duration) ? `(${record['Duration'] || record.Duration})` : ''}
+            </span>
+          </div>
+          
+          <div class="form-grid-2">
+            <!-- Start Section -->
+            <div style="background: rgba(0,0,0,0.25); padding: 9px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                <span style="font-size: 0.74rem; color: var(--green-electric); font-weight: 700;">🟢 শুরুর সময়:</span>
+                <button type="button" class="chip-btn" style="font-size: 0.7rem; padding: 2px 8px; border-color: rgba(0, 242, 157, 0.4); color: var(--green-electric);" onclick="window.SmartHisab.setProductionCurrentTime('start')">⏰ এখন শুরু</button>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <input type="date" id="f_StartDate" class="form-input font-mono" style="font-size: 0.78rem; padding: 5px 8px;" value="${record ? (record['Start Date'] || record.StartDate || record.Date || dateVal) : dateVal}" onchange="window.SmartHisab.calcProductionDuration()" />
+                <input type="time" id="f_StartTime" class="form-input font-mono" value="${record ? (record['Start Time'] || record.StartTime || '') : ''}" onchange="window.SmartHisab.calcProductionDuration()" />
+              </div>
+            </div>
+
+            <!-- End Section -->
+            <div style="background: rgba(0,0,0,0.25); padding: 9px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.06);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                <span style="font-size: 0.74rem; color: var(--gold-neon); font-weight: 700;">🔴 শেষ করার সময়:</span>
+                <div style="display: flex; gap: 4px;">
+                  <button type="button" class="chip-btn" style="font-size: 0.68rem; padding: 2px 5px;" onclick="window.SmartHisab.setEndDatePreset('same')" title="শুরুর দিনের সমান">একই দিন</button>
+                  <button type="button" class="chip-btn" style="font-size: 0.68rem; padding: 2px 5px;" onclick="window.SmartHisab.setEndDatePreset('next')" title="পরের দিন">+১ দিন</button>
+                  <button type="button" class="chip-btn" style="font-size: 0.7rem; padding: 2px 8px; border-color: rgba(245, 158, 11, 0.4); color: var(--gold-neon);" onclick="window.SmartHisab.setProductionCurrentTime('end')">⏰ এখন শেষ</button>
+                </div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <input type="date" id="f_EndDate" class="form-input font-mono" style="font-size: 0.78rem; padding: 5px 8px;" value="${record ? (record['End Date'] || record.EndDate || record['Start Date'] || record.Date || dateVal) : dateVal}" onchange="window.SmartHisab.calcProductionDuration()" />
+                <input type="time" id="f_EndTime" class="form-input font-mono" value="${record ? (record['End Time'] || record.EndTime || '') : ''}" onchange="window.SmartHisab.calcProductionDuration()" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Dynamic Live Time Preview Box -->
+          <div id="prodLiveTimePreview" style="margin-top: 8px; padding: 8px 12px; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(0, 242, 157, 0.2); border-radius: var(--radius-xs);">
+            ${record && (record['Start Time'] || record['End Time']) ? `
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 1.1rem;">⏱️</span>
+                <span style="font-family: var(--font-bangla); font-size: 0.84rem; color: var(--text-pure); font-weight: 600;">
+                  ${formatProductionTimeRange(record)}
+                </span>
+              </div>
+            ` : `
+              <span style="color: var(--text-dim); font-size: 0.76rem;">কাজের শুরুর ও শেষ সময় দিলে ফরম্যাটেড প্রিভিউ এখানে দৃশ্যমান হবে (যেমন: শুরু - মঙ্গলবার সকাল ১০:২৫, শেষ - বুধবার সন্ধ্যা ৬:৪৫ (১ দিন ৮ ঘণ্টা ২০ মিনিট))</span>
+            `}
+          </div>
+
+          <input type="hidden" id="f_Duration" value="${record ? (record['Duration'] || record.Duration || '') : ''}" />
+        </div>
+
         <!-- 📸 Image Attachment Options (Phone Storage, Camera, Google Photos) -->
         <div class="form-group">
           <label class="form-label" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
             <span>কাজের স্যাম্পল ছবি (Drive Storage):</span>
             <span style="font-size: 0.72rem; color: var(--text-muted); font-weight: 400;">Google Drive এ স্থায়ীভাবে সংরক্ষিত হবে</span>
           </label>
+
+          <!-- ☁️ Google Drive Cloud Sync Status & Quick Connect Card -->
+          <div id="driveSyncStatusBox" style="margin-bottom: 10px; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid ${isDriveConnected() ? 'rgba(0, 242, 157, 0.35)' : 'rgba(245, 158, 11, 0.45)'}; background: ${isDriveConnected() ? 'rgba(0, 242, 157, 0.06)' : 'rgba(245, 158, 11, 0.08)'};">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 1.2rem;">${isDriveConnected() ? '🟢' : '☁️'}</span>
+                <div>
+                  <div style="font-size: 0.82rem; font-weight: 700; color: ${isDriveConnected() ? 'var(--green-electric)' : 'var(--gold-neon)'};">
+                    ${isDriveConnected() ? 'Google Drive ক্লাউড সিঙ্ক সক্রিয়' : 'Google Drive ক্লাউড সিঙ্ক সংযুক্ত নেই'}
+                  </div>
+                  <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;">
+                    ${isDriveConnected() ? 'ছবি সরাসরি Google Drive এ সংরক্ষিত হয়ে অন্য সব ব্রাউজার ও ডিভাইসে সিঙ্ক হবে।' : 'অন্যান্য ব্রাউজার ও ডিভাইসে ছবি দেখতে এক ক্লিকে অনুমতি দিন:'}
+                  </div>
+                </div>
+              </div>
+              ${!isDriveConnected() ? `
+                <button type="button" class="btn btn-primary" style="font-size: 0.76rem; padding: 6px 12px; white-space: nowrap;" onclick="window.SmartHisab.connectGoogleDriveFromForm()">
+                  🔗 Google Drive সংযুক্ত করুন
+                </button>
+              ` : `
+                <span class="font-mono" style="font-size: 0.72rem; color: var(--green-electric); font-weight: 600;">✓ সিঙ্ক সক্রিয়</span>
+              `}
+            </div>
+          </div>
 
           <!-- Hidden Native File Inputs -->
           <input type="file" id="f_prodImageStorage" accept="image/*" style="display: none;" onchange="window.SmartHisab.handleImageSelected(event)" />
@@ -2864,6 +3270,248 @@ function initProductionCalculationListeners() {
 }
 
 /**
+ * 🏷️ Interactive Tag Selection for Production Form
+ */
+export function selectProductionTag(tag) {
+  const hiddenIn = document.getElementById('f_Tag');
+  if (hiddenIn) {
+    hiddenIn.value = tag;
+    hiddenIn.dataset.userSelected = 'true';
+  }
+
+  const buttons = document.querySelectorAll('.prod-tag-btn');
+  buttons.forEach(btn => {
+    if (btn.getAttribute('data-tag') === tag) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+}
+
+/**
+ * Auto-suggest tag when user types work name
+ */
+export function onWorkNameInput(val) {
+  if (!val) return;
+  const tagInput = document.getElementById('f_Tag');
+  if (tagInput && tagInput.dataset.userSelected === 'true') return; // User made manual choice
+
+  const clean = String(val).toLowerCase();
+  let suggested = '';
+  if (clean.includes('গোলগোলা') || clean.includes('গোল গলা') || clean.includes('গোল-গলা')) suggested = 'গোলগোলা';
+  else if (clean.includes('শার্ট') || clean.includes('shirt')) suggested = 'শার্ট';
+  else if (clean.includes('প্যান্ট') || clean.includes('pant') || clean.includes('trouser')) suggested = 'প্যান্ট';
+  else if (clean.includes('কটি') || clean.includes('koti') || clean.includes('কোটি')) suggested = 'কটি';
+
+  if (suggested) {
+    selectProductionTag(suggested);
+  }
+}
+
+/**
+ * Quick button to set current local time (HH:mm) for Production Start or End Time
+ */
+export function setProductionCurrentTime(type) {
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const timeStr = `${hours}:${minutes}`;
+
+  const targetInput = document.getElementById(type === 'start' ? 'f_StartTime' : 'f_EndTime');
+  if (targetInput) {
+    targetInput.value = timeStr;
+    calcProductionDuration();
+    showToast(`${type === 'start' ? 'শুরু করার সময়' : 'শেষ করার সময়'} সেট করা হয়েছে: ${formatBengaliTime12(Number(hours), Number(minutes))}`, 'info');
+  }
+}
+
+/**
+ * Quick preset for End Date (same day or next day)
+ */
+export function setEndDatePreset(mode) {
+  const startDate = document.getElementById('f_StartDate')?.value || document.getElementById('f_Date')?.value || new Date().toISOString().split('T')[0];
+  const endInput = document.getElementById('f_EndDate');
+  if (!endInput) return;
+  if (mode === 'same') {
+    endInput.value = startDate;
+  } else if (mode === 'next') {
+    const d = new Date(startDate + 'T12:00:00');
+    d.setDate(d.getDate() + 1);
+    endInput.value = d.toISOString().split('T')[0];
+  }
+  calcProductionDuration();
+}
+
+/**
+ * Calculates and displays total work shift duration between Start and End Time in Bengali format
+ */
+export function calcProductionDuration() {
+  const startDate = document.getElementById('f_StartDate')?.value || document.getElementById('f_Date')?.value || '';
+  const startTime = document.getElementById('f_StartTime')?.value || '';
+  let endDate = document.getElementById('f_EndDate')?.value || '';
+  const endTime = document.getElementById('f_EndTime')?.value || '';
+  const previewEl = document.getElementById('prodLiveTimePreview');
+  const badge = document.getElementById('prodDurationBadge');
+  const hiddenIn = document.getElementById('f_Duration');
+
+  if (!startTime) {
+    if (previewEl) {
+      previewEl.innerHTML = '<span style="color: var(--text-dim); font-size: 0.76rem;">কাজের শুরুর ও শেষ সময় দিলে ফরম্যাটেড প্রিভিউ এখানে দৃশ্যমান হবে (যেমন: শুরু - মঙ্গলবার সকাল ১০:২৫, শেষ - বুধবার সন্ধ্যা ৬:৪৫ (১ দিন ৮ ঘণ্টা ২০ মিনিট))</span>';
+    }
+    if (badge) badge.textContent = '';
+    if (hiddenIn) hiddenIn.value = '';
+    return;
+  }
+
+  // Overnight or next day detection if endDate not explicitly set
+  if (!endDate && startDate) {
+    if (startTime && endTime) {
+      const [sh, sm] = startTime.split(':').map(Number);
+      const [eh, em] = endTime.split(':').map(Number);
+      if (eh < sh || (eh === sh && em < sm)) {
+        const nextD = new Date(startDate + 'T12:00:00');
+        nextD.setDate(nextD.getDate() + 1);
+        endDate = nextD.toISOString().split('T')[0];
+        const endInput = document.getElementById('f_EndDate');
+        if (endInput && !endInput.value) endInput.value = endDate;
+      } else {
+        endDate = startDate;
+      }
+    } else {
+      endDate = startDate;
+    }
+  }
+
+  const dummyRecord = {
+    'Start Date': startDate,
+    'Start Time': startTime,
+    'End Date': endDate,
+    'End Time': endTime,
+    Date: startDate
+  };
+
+  const formattedStr = formatProductionTimeRange(dummyRecord);
+  
+  if (previewEl) {
+    previewEl.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 1.1rem;">⏱️</span>
+        <span style="font-family: var(--font-bangla); font-size: 0.84rem; color: var(--text-pure); font-weight: 600;">
+          ${formattedStr}
+        </span>
+      </div>
+    `;
+  }
+
+  const durMatch = formattedStr.match(/\(([^)]+)\)$/);
+  const durVal = durMatch ? durMatch[1] : '';
+  if (badge) {
+    badge.innerHTML = durVal ? `(${durVal})` : '';
+  }
+  if (hiddenIn) {
+    hiddenIn.value = durVal;
+  }
+}
+
+/**
+ * 🔗 Direct user-triggered Google Drive authorization from form
+ */
+export async function connectGoogleDriveFromForm() {
+  try {
+    showToast('Google Drive অনুমোদন স্ক্রিন চালু হচ্ছে...', 'info');
+    const token = await connectGoogleDrive();
+    if (token) {
+      showToast('✓ Google Drive সফলভাবে সংযুক্ত হয়েছে!', 'success');
+      const statusBox = document.getElementById('driveSyncStatusBox');
+      if (statusBox) {
+        statusBox.innerHTML = `
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 1.2rem;">🟢</span>
+              <div>
+                <div style="font-size: 0.82rem; font-weight: 700; color: var(--green-electric);">
+                  Google Drive ক্লাউড সিঙ্ক সক্রিয়
+                </div>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;">
+                  ছবি সরাসরি Google Drive এ সংরক্ষিত হয়ে অন্য সব ব্রাউজার ও ডিভাইসে সিঙ্ক হবে।
+                </div>
+              </div>
+            </div>
+            <span class="font-mono" style="font-size: 0.72rem; color: var(--green-electric); font-weight: 600;">✓ সিঙ্ক সক্রিয়</span>
+          </div>
+        `;
+        statusBox.style.borderColor = 'rgba(0, 242, 157, 0.35)';
+        statusBox.style.background = 'rgba(0, 242, 157, 0.06)';
+      }
+      if (currentCompressedImageBase64 && !currentDriveUploadResult) {
+        triggerDriveUploadForCurrentForm();
+      }
+    }
+  } catch (err) {
+    console.error('Google Drive connect error:', err);
+    showToast('Google Drive অনুমোদন ব্যর্থ: ' + (err.message || ''), 'warning');
+  }
+}
+
+/**
+ * 🔗 Google Drive connect from settings view
+ */
+export async function connectGoogleDriveFromSettings() {
+  try {
+    showToast('Google Drive অনুমোদন স্ক্রিন চালু হচ্ছে...', 'info');
+    const token = await connectGoogleDrive();
+    if (token) {
+      showToast('✓ Google Drive সফলভাবে সংযুক্ত হয়েছে!', 'success');
+      renderApp();
+    }
+  } catch (err) {
+    console.error('Google Drive settings connect error:', err);
+    showToast('Google Drive সংযোগে সমস্যা: ' + (err.message || ''), 'warning');
+  }
+}
+
+/**
+ * ☁️ Background uploader for current modal's image
+ */
+export async function triggerDriveUploadForCurrentForm() {
+  if (!currentCompressedImageBase64) return;
+  const token = getCachedAccessToken();
+  if (!token) return;
+
+  isUploadingToDrive = true;
+  const badge = document.getElementById('imageCompressionBadge');
+  if (badge) {
+    badge.innerHTML = '<span style="color: var(--cyan-cyber); font-family: var(--font-mono);">☁️ Google Drive এ ব্যাকগ্রাউন্ডে আপলোড হচ্ছে...</span>';
+  }
+
+  try {
+    const workName = document.getElementById('f_WorkName')?.value || 'Production';
+    const cleanName = workName.replace(/[^a-zA-Z0-9_\u0980-\u09FF]/g, '_');
+    const fileName = `SmartHisab_${cleanName}_${Date.now()}.jpg`;
+
+    const driveUpload = await uploadImageToDrive(currentCompressedImageBase64, fileName, token, {
+      workName
+    });
+
+    if (driveUpload && driveUpload.directImageUrl) {
+      currentDriveUploadResult = driveUpload;
+      if (badge) {
+        badge.innerHTML = '<span style="color: var(--green-electric); font-weight: 700;">✓ Google Drive এ সফলভাবে আপলোড হয়েছে! (সব ব্রাউজারে সিঙ্ক সক্রিয়)</span>';
+      }
+      showToast('✓ Google Drive এ ছবি আপলোড সম্পন্ন হয়েছে!', 'success');
+    }
+  } catch (err) {
+    console.warn('Background Drive upload notice:', err);
+    if (badge) {
+      badge.innerHTML = '<span style="color: var(--gold-neon);">⚠️ Google Drive আপলোডে বিলম্ব, সেভ করার সময় স্বয়ংক্রিয় ক্লাউড সিঙ্ক হবে</span>';
+    }
+  } finally {
+    isUploadingToDrive = false;
+  }
+}
+
+/**
  * Handle Production Image File Selection & Compression
  */
 export async function handleImageSelected(e) {
@@ -2874,6 +3522,7 @@ export async function handleImageSelected(e) {
     showToast('ইমেজ অপটিমাইজ ও কম্প্রেস করা হচ্ছে...', 'info');
     const base64Data = await compressImageFile(file, 800, 0.7);
     currentCompressedImageBase64 = base64Data;
+    currentDriveUploadResult = null;
 
     const previewBox = document.getElementById('imagePreviewBox');
     const thumb = document.getElementById('attachedImgThumb');
@@ -2881,7 +3530,13 @@ export async function handleImageSelected(e) {
 
     if (thumb) thumb.src = base64Data;
     if (previewBox) previewBox.style.display = 'block';
-    if (badge) badge.textContent = '✓ ছবি অপটিমাইজড ও আপলোডের জন্য প্রস্তুত';
+
+    if (isDriveConnected()) {
+      if (badge) badge.innerHTML = '<span style="color: var(--cyan-cyber);">☁️ Google Drive এ ব্যাকগ্রাউন্ডে আপলোড হচ্ছে...</span>';
+      triggerDriveUploadForCurrentForm();
+    } else {
+      if (badge) badge.innerHTML = '<span style="color: var(--gold-neon);">⚠️ Google Drive সংযুক্ত নেই — সব ব্রাউজারে দেখতে উপরের বাটনে ট্যাপ করে সিঙ্ক করুন</span>';
+    }
 
     showToast('✓ ছবি সফলভাবে সিলেক্ট হয়েছে', 'success');
   } catch (err) {
@@ -3029,6 +3684,8 @@ export async function submitSheetForm() {
     newRow.Note = document.getElementById('f_ProdNote')?.value || '';
 
     if (type === 'Work') {
+      const tagVal = document.getElementById('f_Tag')?.value || 'অন্যান্য';
+      newRow.Tag = tagVal;
       newRow['Work Name'] = document.getElementById('f_WorkName')?.value || '';
       newRow.Size = document.getElementById('f_Size')?.value || '';
       newRow.Color = document.getElementById('f_Color')?.value || '';
@@ -3037,7 +3694,34 @@ export async function submitSheetForm() {
       newRow.Rate = Number(document.getElementById('f_Rate')?.value) || 0;
       newRow.Earned = Number(document.getElementById('f_Earned')?.value) || 0;
       newRow.Received = 0;
+
+      // ⏱️ Start & End Date and Time tracking
+      const startDate = document.getElementById('f_StartDate')?.value || newRow.Date;
+      const startTime = document.getElementById('f_StartTime')?.value || '';
+      const endDate = document.getElementById('f_EndDate')?.value || '';
+      const endTime = document.getElementById('f_EndTime')?.value || '';
+
+      newRow['Start Date'] = startDate;
+      newRow['Start Time'] = startTime;
+      newRow['End Date'] = endDate;
+      newRow['End Time'] = endTime;
+
+      const fullTimeStr = formatProductionTimeRange(newRow);
+      const durMatch = fullTimeStr.match(/\(([^)]+)\)$/);
+      const durVal = durMatch ? durMatch[1] : (document.getElementById('f_Duration')?.value || '');
+      newRow.Duration = durVal;
+
+      // Add tag & formatted time to Note for Google Sheets universal fallback
+      const metaTags = [];
+      if (tagVal) metaTags.push(`[ট্যাগ: ${tagVal}]`);
+      if (fullTimeStr) metaTags.push(`[${fullTimeStr}]`);
+
+      if (metaTags.length > 0) {
+        let cleanNote = (newRow.Note || '').replace(/\[ট্যাগ:[^\]]*\]/g, '').replace(/\[সময়:[^\]]*\]/g, '').replace(/\[শুরু[^\]]*\]/g, '').trim();
+        newRow.Note = cleanNote ? `${cleanNote} ${metaTags.join(' ')}` : metaTags.join(' ');
+      }
     } else {
+      newRow.Tag = 'অন্যান্য';
       newRow['Work Name'] = 'বিল উত্তোলন';
       newRow.Size = '-';
       newRow.Color = '-';
@@ -3046,34 +3730,94 @@ export async function submitSheetForm() {
       newRow.Rate = 0;
       newRow.Earned = 0;
       newRow.Received = Number(document.getElementById('f_Received')?.value) || 0;
+      newRow['Start Date'] = '';
+      newRow['Start Time'] = '';
+      newRow['End Date'] = '';
+      newRow['End Time'] = '';
+      newRow.Duration = '';
     }
 
-    // Image handling with Google Drive Cloud Upload & Local Cache (Frictionless, No Repeated Permission Popups)
+    // Image handling with Google Drive Cloud Upload & Cross-Device Sync
     if (currentCompressedImageBase64) {
       newRow.Image_URL = currentCompressedImageBase64; // local preview immediate fallback
       newRow.Image_Base64 = currentCompressedImageBase64;
       saveImageToCache(newRow.ID, currentCompressedImageBase64);
 
-      // Only attempt direct client Drive upload if token is ALREADY cached in memory/session (never popup!)
-      const activeToken = getCachedAccessToken();
-      if (activeToken) {
-        try {
-          const cleanName = (newRow['Work Name'] || 'Production').replace(/[^a-zA-Z0-9_\u0980-\u09FF]/g, '_');
-          const fileName = `SmartHisab_${cleanName}_${recordId}.jpg`;
-          const driveUpload = await uploadImageToDrive(currentCompressedImageBase64, fileName, activeToken, {
-            recordId,
-            workName: newRow['Work Name'] || ''
-          });
+      // 1. If background upload to Google Drive already finished
+      if (currentDriveUploadResult && currentDriveUploadResult.directImageUrl) {
+        newRow.Image_URL = currentDriveUploadResult.directImageUrl;
+        newRow.DriveFileId = currentDriveUploadResult.fileId;
+        newRow.DriveWebViewLink = currentDriveUploadResult.webViewLink;
+        saveImageToCache(newRow.ID, currentCompressedImageBase64);
+        saveImageToCache(currentDriveUploadResult.fileId, currentCompressedImageBase64);
+        saveImageToCache(currentDriveUploadResult.directImageUrl, currentCompressedImageBase64);
+      } else {
+        // 2. Attempt Google Drive upload to get permanent URL synced across all devices
+        let activeToken = getCachedAccessToken();
+        let driveUploaded = false;
 
-          if (driveUpload && driveUpload.directImageUrl) {
-            newRow.Image_URL = driveUpload.directImageUrl;
-            newRow.DriveFileId = driveUpload.fileId;
-            newRow.DriveWebViewLink = driveUpload.webViewLink;
-            saveImageToCache(newRow.ID, currentCompressedImageBase64);
-            saveImageToCache(driveUpload.fileId, currentCompressedImageBase64);
+        if (activeToken) {
+          try {
+            showToast('☁️ Google Drive এ ছবি আপলোড হচ্ছে...', 'info');
+            const cleanName = (newRow['Work Name'] || 'Production').replace(/[^a-zA-Z0-9_\u0980-\u09FF]/g, '_');
+            const fileName = `SmartHisab_${cleanName}_${recordId}.jpg`;
+            
+            let driveUpload;
+            try {
+              driveUpload = await uploadImageToDrive(currentCompressedImageBase64, fileName, activeToken, {
+                recordId,
+                workName: newRow['Work Name'] || ''
+              });
+            } catch (uploadErr) {
+              console.warn('First drive upload attempt failed, trying token refresh:', uploadErr);
+              setCachedAccessToken(null);
+              activeToken = await ensureAccessToken(false);
+              if (activeToken) {
+                driveUpload = await uploadImageToDrive(currentCompressedImageBase64, fileName, activeToken, {
+                  recordId,
+                  workName: newRow['Work Name'] || ''
+                });
+              }
+            }
+
+            if (driveUpload && driveUpload.directImageUrl) {
+              newRow.Image_URL = driveUpload.directImageUrl;
+              newRow.DriveFileId = driveUpload.fileId;
+              newRow.DriveWebViewLink = driveUpload.webViewLink;
+              saveImageToCache(newRow.ID, currentCompressedImageBase64);
+              saveImageToCache(driveUpload.fileId, currentCompressedImageBase64);
+              saveImageToCache(driveUpload.directImageUrl, currentCompressedImageBase64);
+              driveUploaded = true;
+              showToast('✓ Google Drive এ ছবি সফলভাবে সংরক্ষিত হয়েছে!', 'success');
+            }
+          } catch (driveErr) {
+            console.error('Direct client Drive upload error:', driveErr);
           }
-        } catch (driveErr) {
-          console.warn('Direct client Drive upload notice (Apps Script backend will handle upload):', driveErr);
+        }
+
+        // 3. Fallback to server-side static storage (/api/upload-image) if Drive token wasn't active
+        if (!driveUploaded) {
+          try {
+            const cleanName = (newRow['Work Name'] || 'Production').replace(/[^a-zA-Z0-9_\u0980-\u09FF]/g, '_');
+            const upRes = await fetch('/api/upload-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                imageBase64: currentCompressedImageBase64,
+                fileName: `SmartHisab_${cleanName}_${recordId}`,
+                recordId
+              })
+            });
+            const upData = await upRes.json();
+            if (upData && upData.success && upData.url) {
+              newRow.Image_URL = upData.url;
+              saveImageToCache(newRow.ID, currentCompressedImageBase64);
+              saveImageToCache(upData.url, currentCompressedImageBase64);
+              showToast('✓ ছবি ক্লাউড সার্ভারে সংরক্ষিত হয়েছে (সব ব্রাউজারে দৃশ্যমান)', 'success');
+            }
+          } catch (srvErr) {
+            console.warn('Server upload fallback notice:', srvErr);
+          }
         }
       }
     } else {
@@ -3086,6 +3830,15 @@ export async function submitSheetForm() {
       }
       if (isEdit && editingRecord.record.DriveWebViewLink) {
         newRow.DriveWebViewLink = editingRecord.record.DriveWebViewLink;
+      }
+      if (isEdit && !newRow['Start Time'] && editingRecord.record['Start Time']) {
+        newRow['Start Time'] = editingRecord.record['Start Time'];
+      }
+      if (isEdit && !newRow['End Time'] && editingRecord.record['End Time']) {
+        newRow['End Time'] = editingRecord.record['End Time'];
+      }
+      if (isEdit && !newRow.Duration && editingRecord.record.Duration) {
+        newRow.Duration = editingRecord.record.Duration;
       }
     }
   } else if (sheet === 'loan') {
@@ -3139,7 +3892,8 @@ export async function submitSheetForm() {
 
   // Push mutation to Google Apps Script & Google Drive
   const action = isEdit ? 'update' : 'create';
-  sendMutation(action, sheet, newRow, currentCompressedImageBase64).then(res => {
+  const payloadBase64 = (newRow.Image_URL && !newRow.Image_URL.startsWith('data:')) ? null : currentCompressedImageBase64;
+  sendMutation(action, sheet, newRow, payloadBase64).then(res => {
     if (res.success && res.result && res.result.data) {
       // If server returned an updated Image_URL from Drive
       if (res.result.data.Image_URL) {
@@ -3234,6 +3988,11 @@ export function openRecordDetailModal(sheet, id) {
 
   if (sheet === 'production') {
     const isWork = record.Type === 'Work';
+    const tag = getProductionItemTag(record);
+    const tagIcon = TAG_ICONS[tag] || '🏷️';
+    const tagClass = TAG_CLASSES[tag] || 'tag-other';
+    const timeRangeStr = formatProductionTimeRange(record);
+
     detailsHtml += `
       <div class="detail-grid">
         <div class="detail-item">
@@ -3249,10 +4008,25 @@ export function openRecordDetailModal(sheet, id) {
             ${isPending ? `<span class="badge-term badge-pending">পেন্ডিং</span>` : `<span class="badge-term badge-income" style="font-size: 0.7rem;">সম্পন্ন</span>`}
           </div>
         </div>
-        <div class="detail-item full-width">
-          <div class="detail-item-label">কাজের নাম (WORK NAME)</div>
-          <div class="detail-item-value" style="color: var(--text-pure); font-size: 1.05rem;">${record['Work Name'] || '-'}</div>
-        </div>
+        ${isWork ? `
+          <div class="detail-item">
+            <div class="detail-item-label">কাজের ট্যাগ (TAG)</div>
+            <div class="detail-item-value">
+              <span class="prod-tag-pill ${tagClass}" style="font-size: 0.8rem; padding: 3px 10px;">
+                ${tagIcon} ${tag}
+              </span>
+            </div>
+          </div>
+          <div class="detail-item">
+            <div class="detail-item-label">কাজের নাম (WORK NAME)</div>
+            <div class="detail-item-value" style="color: var(--text-pure); font-size: 1.05rem; font-weight: 700;">${record['Work Name'] || '-'}</div>
+          </div>
+        ` : `
+          <div class="detail-item full-width">
+            <div class="detail-item-label">কাজের নাম (WORK NAME)</div>
+            <div class="detail-item-value" style="color: var(--text-pure); font-size: 1.05rem;">${record['Work Name'] || 'বিল উত্তোলন'}</div>
+          </div>
+        `}
         ${isWork ? `
           <div class="detail-item">
             <div class="detail-item-label">সাইজ (SIZE)</div>
@@ -3264,16 +4038,25 @@ export function openRecordDetailModal(sheet, id) {
           </div>
           <div class="detail-item">
             <div class="detail-item-label">পরিমাণ (PCS)</div>
-            <div class="detail-item-value font-mono">${record.Pcs || 0} পিস</div>
+            <div class="detail-item-value font-mono">${toBengaliDigits(record.Pcs || 0)} পিস</div>
           </div>
           <div class="detail-item">
             <div class="detail-item-label">ডজন ও রেট (RATE)</div>
-            <div class="detail-item-value font-mono">${record.Dozen || 0} ডজন @ ৳${record.Rate || 0}</div>
+            <div class="detail-item-value font-mono">${toBengaliDigits(record.Dozen || 0)} ডজন @ ৳${toBengaliDigits(record.Rate || 0)}</div>
           </div>
           <div class="detail-item full-width" style="background: rgba(0, 242, 157, 0.06); border-color: var(--green-electric);">
             <div class="detail-item-label" style="color: var(--green-electric);">মোট অর্জিত মজুরি (TOTAL WAGE)</div>
             <div class="detail-item-value font-mono" style="color: var(--green-electric); font-size: 1.25rem;">${formatTaka(record.Earned || 0)}</div>
           </div>
+          ${timeRangeStr ? `
+            <div class="detail-item full-width" style="background: rgba(0, 242, 157, 0.04); border: 1px dashed rgba(0, 242, 157, 0.35); border-radius: var(--radius-xs);">
+              <div class="detail-item-label" style="color: var(--green-electric); font-weight: 700;">⏱️ কাজের সময়কাল (WORK SHIFT TIME)</div>
+              <div class="detail-item-value" style="display: flex; gap: 8px; align-items: center; font-size: 0.9rem; line-height: 1.45; font-family: var(--font-bangla);">
+                <span style="font-size: 1.15rem;">⏱️</span>
+                <span style="color: var(--text-pure); font-weight: 600;">${timeRangeStr}</span>
+              </div>
+            </div>
+          ` : ''}
         ` : `
           <div class="detail-item full-width" style="background: rgba(255, 59, 105, 0.06); border-color: var(--red-coral);">
             <div class="detail-item-label" style="color: var(--red-coral);">উত্তোলনকৃত অর্থ (WITHDRAWN)</div>
@@ -3432,9 +4215,28 @@ export async function handleImageError(imgEl, fileId, recordId) {
     return;
   }
 
-  // 2. Try Google Drive authenticated fetch via Drive API v3 (only if already cached, never popup)
+  // 2. Try alternative Google Drive CDN endpoints before giving up
   const cleanId = fileId || extractDriveFileId(imgEl.getAttribute('data-original-src') || imgEl.src);
   if (cleanId) {
+    const currentSrc = imgEl.src || '';
+
+    // If thumbnail failed, try direct lh3 CDN endpoint
+    if (!currentSrc.includes('googleusercontent.com') && !imgEl.getAttribute('data-tried-lh3')) {
+      imgEl.setAttribute('data-tried-lh3', 'true');
+      imgEl.onerror = () => handleImageError(imgEl, cleanId, recordId);
+      imgEl.src = `https://lh3.googleusercontent.com/d/${cleanId}`;
+      return;
+    }
+
+    // If lh3 failed, try drive uc endpoint
+    if (!currentSrc.includes('uc?export=view') && !imgEl.getAttribute('data-tried-uc')) {
+      imgEl.setAttribute('data-tried-uc', 'true');
+      imgEl.onerror = () => handleImageError(imgEl, cleanId, recordId);
+      imgEl.src = `https://drive.google.com/uc?export=view&id=${cleanId}`;
+      return;
+    }
+
+    // 3. Try Google Drive authenticated fetch via Drive API v3 (if token exists)
     try {
       const token = getCachedAccessToken();
       if (token) {
@@ -3460,7 +4262,7 @@ export async function handleImageError(imgEl, fileId, recordId) {
     }
   }
 
-  // 3. Fallback SVG placeholder
+  // 4. Fallback SVG placeholder
   imgEl.src = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%238E9BAE%22 stroke-width=%222%22><rect width=%2218%22 height=%2218%22 x=%223%22 y=%223%22 rx=%222%22/><circle cx=%229%22 cy=%229%22 r=%222%22/><path d=%22m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21%22/></svg>';
 }
 
@@ -3559,6 +4361,8 @@ window.SmartHisab = {
   handleGoogleLogout,
   openGoogleDriveFolder,
   saveAllowedEmailsFromSettings,
+  connectGoogleDriveFromForm,
+  connectGoogleDriveFromSettings,
 
   // Passcode
   enterKey,
@@ -3578,6 +4382,7 @@ window.SmartHisab = {
   setHistoryFilter,
   setHistorySearch,
   setProductionTypeFilter,
+  setProductionTagFilter,
   setProductionDateRange,
   setProductionMonth,
   setProductionCustomDates,
@@ -3594,6 +4399,11 @@ window.SmartHisab = {
   submitSheetDelete,
   deleteRecordDirect,
   toggleProductionFields,
+  selectProductionTag,
+  onWorkNameInput,
+  setEndDatePreset,
+  setProductionCurrentTime,
+  calcProductionDuration,
   handleImageSelected,
   removeAttachedImage,
   togglePhotoUrlInput,
@@ -3624,6 +4434,15 @@ window.SmartHisab = {
   addExpenseCategory,
   removeExpenseCategory,
 
+  // ✨ AI Natural Language & Voice Smart Assistant
+  openAiModal,
+  closeAiModal,
+  setAiPromptExample,
+  toggleAiVoiceRecording,
+  processAiPrompt,
+  editAiResultInModal,
+  confirmAndSaveAiEntry,
+
   // Sync & Settings
   triggerManualSync,
   saveApiUrl,
@@ -3635,3 +4454,341 @@ window.SmartHisab = {
   exportCsv,
   toggleQuickMenu
 };
+
+// ==========================================================================
+// ✨ AI Natural Language & Voice Smart Assistant
+// ==========================================================================
+let currentAiParsedResult = null;
+let speechRecognitionInstance = null;
+let isAiVoiceRecording = false;
+
+export function openAiModal(initialPrompt = '') {
+  const modal = document.getElementById('aiEntryModal');
+  const overlay = document.getElementById('aiModalOverlay');
+  const input = document.getElementById('aiPromptInput');
+  const resultCard = document.getElementById('aiResultCard');
+  const loadingBox = document.getElementById('aiLoadingBox');
+  const voiceStatus = document.getElementById('aiVoiceStatus');
+  const voiceBtn = document.getElementById('aiVoiceBtn');
+  const confirmBtn = document.getElementById('aiConfirmSaveBtn');
+
+  if (!modal || !overlay) return;
+
+  currentAiParsedResult = null;
+  if (resultCard) resultCard.style.display = 'none';
+  if (loadingBox) loadingBox.style.display = 'none';
+  if (voiceStatus) voiceStatus.style.display = 'none';
+  if (voiceBtn) voiceBtn.classList.remove('recording');
+  if (confirmBtn) {
+    confirmBtn.disabled = false;
+    confirmBtn.innerHTML = '✓ Google Sheets ও অ্যাপে সেভ করুন';
+  }
+
+  if (input) {
+    input.value = initialPrompt || '';
+    setTimeout(() => input.focus(), 120);
+  }
+
+  overlay.classList.add('active');
+  modal.classList.add('active');
+}
+
+export function closeAiModal() {
+  if (isAiVoiceRecording && speechRecognitionInstance) {
+    try { speechRecognitionInstance.stop(); } catch (e) {}
+    isAiVoiceRecording = false;
+  }
+  const modal = document.getElementById('aiEntryModal');
+  const overlay = document.getElementById('aiModalOverlay');
+  if (overlay) overlay.classList.remove('active');
+  if (modal) modal.classList.remove('active');
+}
+
+export function setAiPromptExample(text) {
+  const input = document.getElementById('aiPromptInput');
+  if (input) {
+    input.value = text;
+    processAiPrompt();
+  }
+}
+
+export function toggleAiVoiceRecording() {
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRec) {
+    showToast('আপনার ব্রাউজারে স্পিচ রিকগনিশন সাপোর্ট করে না, অনুগ্রহ করে লিখে দিন।', 'warning');
+    return;
+  }
+
+  const voiceBtn = document.getElementById('aiVoiceBtn');
+  const voiceStatus = document.getElementById('aiVoiceStatus');
+  const promptInput = document.getElementById('aiPromptInput');
+
+  if (isAiVoiceRecording && speechRecognitionInstance) {
+    try {
+      speechRecognitionInstance.stop();
+    } catch (e) {}
+    isAiVoiceRecording = false;
+    if (voiceBtn) voiceBtn.classList.remove('recording');
+    if (voiceStatus) voiceStatus.style.display = 'none';
+    return;
+  }
+
+  try {
+    const recognition = new SpeechRec();
+    recognition.lang = 'bn-BD'; // Bengali (Bangladesh)
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
+    recognition.onstart = () => {
+      isAiVoiceRecording = true;
+      if (voiceBtn) voiceBtn.classList.add('recording');
+      if (voiceStatus) {
+        voiceStatus.style.display = 'flex';
+        voiceStatus.innerHTML = '<span class="pulsing-mic-dot"></span> শুনছি... বাংলায় বলুন (কথা শেষ হলে আবার মাইকে ক্লিক করুন)';
+      }
+    };
+
+    recognition.onresult = (event) => {
+      let transcript = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        transcript += event.results[i][0].transcript;
+      }
+      if (promptInput && transcript) {
+        promptInput.value = transcript;
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.warn('Speech recognition notice:', event.error);
+      isAiVoiceRecording = false;
+      if (voiceBtn) voiceBtn.classList.remove('recording');
+      if (voiceStatus) voiceStatus.style.display = 'none';
+      if (event.error !== 'no-speech') {
+        showToast('ভয়েস রিকগনিশন ত্রুটি: ' + event.error, 'warning');
+      }
+    };
+
+    recognition.onend = () => {
+      isAiVoiceRecording = false;
+      if (voiceBtn) voiceBtn.classList.remove('recording');
+      if (voiceStatus) voiceStatus.style.display = 'none';
+      if (promptInput?.value?.trim()) {
+        showToast('ভয়েস কমান্ড গ্রহণ করা হয়েছে!', 'info');
+      }
+    };
+
+    speechRecognitionInstance = recognition;
+    recognition.start();
+  } catch (err) {
+    console.error('Failed to start speech recognition:', err);
+    showToast('মাইক্রোফোন চালু করতে সমস্যা হয়েছে: ' + err.message, 'error');
+  }
+}
+
+export async function processAiPrompt() {
+  const input = document.getElementById('aiPromptInput');
+  const promptText = input?.value?.trim();
+  if (!promptText) {
+    showToast('অনুগ্রহ করে হিসাবের বিবরণ লিখুন বা মাইকে বলুন', 'warning');
+    return;
+  }
+
+  const loadingBox = document.getElementById('aiLoadingBox');
+  const resultCard = document.getElementById('aiResultCard');
+  const processBtn = document.getElementById('aiProcessBtn');
+
+  if (loadingBox) loadingBox.style.display = 'block';
+  if (resultCard) resultCard.style.display = 'none';
+  if (processBtn) processBtn.disabled = true;
+
+  try {
+    const res = await fetch('/api/gemini/parse-entry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: promptText })
+    });
+
+    const parsed = await res.json();
+
+    if (!parsed || !parsed.success || !parsed.sheet || !parsed.data) {
+      throw new Error(parsed?.error || 'AI হিসাব শনাক্ত করতে পারেনি। অনুগ্রহ করে বিস্তারিত লিখুন।');
+    }
+
+    currentAiParsedResult = parsed;
+
+    // Render Result Preview
+    const badge = document.getElementById('aiResultBadge');
+    const summary = document.getElementById('aiResultSummary');
+    const grid = document.getElementById('aiResultDetailsGrid');
+
+    if (badge) {
+      badge.textContent = parsed.sheetBangla || parsed.sheet;
+      badge.className = `badge-term badge-${parsed.sheet === 'income' ? 'income' : (parsed.sheet === 'expense' ? 'expense' : 'work')}`;
+    }
+
+    if (summary) {
+      summary.textContent = parsed.summaryBangla || 'শনাক্তকৃত লেনদেন';
+    }
+
+    if (grid) {
+      const d = parsed.data;
+      let itemsHtml = `
+        <div class="detail-item">
+          <div class="detail-item-label">তারিখ (DATE)</div>
+          <div class="detail-item-value">${d.Date || 'আজ'}</div>
+        </div>
+        <div class="detail-item">
+          <div class="detail-item-label">খাত / বিবরণ</div>
+          <div class="detail-item-value">${d['Work Name'] || d.Category || d.Description || d['Category/Note'] || '-'}</div>
+        </div>
+      `;
+
+      if (parsed.sheet === 'production') {
+        const isWork = d.Type === 'Work';
+        if (isWork) {
+          itemsHtml += `
+            <div class="detail-item">
+              <div class="detail-item-label">পরিমাণ ও রেট</div>
+              <div class="detail-item-value font-mono">${d.Pcs || 0} পিস (${d.Dozen || 0} ডজন) @ ৳${d.Rate || 0}</div>
+            </div>
+            <div class="detail-item">
+              <div class="detail-item-label">মোট অর্জিত মজুরি</div>
+              <div class="detail-item-value font-mono" style="color: var(--cyan-cyber); font-weight: 700;">${formatTaka(d.Earned || 0)}</div>
+            </div>
+          `;
+        } else {
+          itemsHtml += `
+            <div class="detail-item">
+              <div class="detail-item-label">উত্তোলনকৃত অর্থ</div>
+              <div class="detail-item-value font-mono" style="color: var(--gold-neon); font-weight: 700;">${formatTaka(d.Received || 0)}</div>
+            </div>
+          `;
+        }
+      } else {
+        const amt = d.Amount || d['Loan Taken'] || d['Loan Paid'] || 0;
+        itemsHtml += `
+          <div class="detail-item">
+            <div class="detail-item-label">টাকার পরিমাণ</div>
+            <div class="detail-item-value font-mono" style="color: ${parsed.sheet === 'income' ? 'var(--green-electric)' : 'var(--red-coral)'}; font-weight: 700;">${formatTaka(amt)}</div>
+          </div>
+        `;
+      }
+
+      if (d.Note) {
+        itemsHtml += `
+          <div class="detail-item full-width">
+            <div class="detail-item-label">মন্তব্য / নোট</div>
+            <div class="detail-item-value" style="font-size: 0.85rem;">${d.Note}</div>
+          </div>
+        `;
+      }
+
+      grid.innerHTML = itemsHtml;
+    }
+
+    if (loadingBox) loadingBox.style.display = 'none';
+    if (resultCard) {
+      resultCard.style.display = 'block';
+      const modalBody = document.querySelector('.ai-modal-body');
+      if (modalBody) {
+        setTimeout(() => {
+          modalBody.scrollTo({ top: modalBody.scrollHeight, behavior: 'smooth' });
+        }, 50);
+      } else {
+        resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    showToast('✓ AI হিসাব সফলভাবে সাজিয়ে তৈরি করেছে!', 'success');
+  } catch (err) {
+    console.error('AI parse failure:', err);
+    if (loadingBox) loadingBox.style.display = 'none';
+    showToast(err.message || 'AI হিসাব শনাক্ত করতে পারেনি', 'error');
+  } finally {
+    if (processBtn) processBtn.disabled = false;
+  }
+}
+
+export function editAiResultInModal() {
+  if (!currentAiParsedResult) return;
+  const { sheet, data } = currentAiParsedResult;
+  closeAiModal();
+
+  // Prefill standard modal
+  editingRecord = null;
+  currentCompressedImageBase64 = null;
+  const modal = document.getElementById('bottomSheetModal');
+  const overlay = document.getElementById('modalOverlay');
+  const title = document.getElementById('sheetModalTitle');
+  const body = document.getElementById('sheetModalBody');
+  const delBtn = document.getElementById('sheetDeleteBtn');
+
+  if (!modal || !overlay || !body) return;
+  if (delBtn) delBtn.style.display = 'none';
+
+  title.innerHTML = `✨ AI এন্ট্রি সম্পাদন (${sheet.toUpperCase()})`;
+  body.innerHTML = getFormFieldsHtml(sheet, data, data.Type);
+
+  overlay.classList.add('active');
+  modal.classList.add('active');
+
+  if (sheet === 'production') {
+    initProductionCalculationListeners();
+  }
+}
+
+export async function confirmAndSaveAiEntry() {
+  if (!currentAiParsedResult) return;
+  const { sheet, data } = currentAiParsedResult;
+
+  const btn = document.getElementById('aiConfirmSaveBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ সেভ হচ্ছে...';
+  }
+
+  const recordId = generateId(sheet);
+  const newRow = {
+    ...data,
+    ID: recordId,
+    UpdatedAt: new Date().toISOString()
+  };
+
+  // Ensure default numbers
+  if (sheet === 'income' || sheet === 'expense') {
+    newRow.Amount = Number(newRow.Amount) || 0;
+  } else if (sheet === 'production') {
+    newRow.Pcs = Number(newRow.Pcs) || 0;
+    newRow.Dozen = Number(newRow.Dozen) || 0;
+    newRow.Rate = Number(newRow.Rate) || 0;
+    newRow.Earned = Number(newRow.Earned) || 0;
+    newRow.Received = Number(newRow.Received) || 0;
+  } else if (sheet === 'loan') {
+    newRow['Loan Taken'] = Number(newRow['Loan Taken']) || 0;
+    newRow['Loan Paid'] = Number(newRow['Loan Paid']) || 0;
+  } else if (sheet === 'fund_transaction') {
+    newRow.Amount = Number(newRow.Amount) || 0;
+  }
+
+  // Update in appData optimistically
+  if (!appData[sheet]) appData[sheet] = [];
+  appData[sheet].unshift(newRow);
+  saveLocalData(appData);
+
+  closeAiModal();
+  renderApp();
+
+  showToast(`✓ ${newRow.ID} সফলভাবে Google Sheets ও অ্যাপে সেভ হয়েছে!`, 'success');
+
+  // Push mutation to Google Apps Script Web App in real-time
+  sendMutation('create', sheet, newRow).then(res => {
+    if (res.success) {
+      showToast('☁️ Google Sheets-এ ডেটা লাইভ সিঙ্ক সম্পন্ন হয়েছে', 'success');
+      triggerBackgroundSync();
+    } else {
+      console.warn('Google Sheets mutation notice:', res.error);
+    }
+  }).catch(e => {
+    console.error('Mutation error:', e);
+  });
+}

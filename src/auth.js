@@ -72,12 +72,12 @@ export function isEmailAuthorized(email) {
 }
 
 /**
- * Get in-memory / session OAuth Access Token
+ * Get in-memory / persistent OAuth Access Token
  */
 export function getCachedAccessToken() {
   if (cachedAccessToken) return cachedAccessToken;
   try {
-    const stored = sessionStorage.getItem('smart_hisab_google_access_token');
+    const stored = localStorage.getItem('smart_hisab_google_access_token') || sessionStorage.getItem('smart_hisab_google_access_token');
     if (stored) {
       cachedAccessToken = stored;
       return stored;
@@ -90,11 +90,35 @@ export function setCachedAccessToken(token) {
   cachedAccessToken = token;
   try {
     if (token) {
+      localStorage.setItem('smart_hisab_google_access_token', token);
+      localStorage.setItem('smart_hisab_google_token_time', Date.now().toString());
+      localStorage.setItem('smart_hisab_drive_permanently_connected', 'true');
       sessionStorage.setItem('smart_hisab_google_access_token', token);
     } else {
+      localStorage.removeItem('smart_hisab_google_access_token');
+      localStorage.removeItem('smart_hisab_google_token_time');
+      localStorage.removeItem('smart_hisab_drive_permanently_connected');
       sessionStorage.removeItem('smart_hisab_google_access_token');
     }
   } catch (e) {}
+}
+
+/**
+ * Check if Google Drive access token is actively available or permanently connected
+ */
+export function isDriveConnected() {
+  const token = getCachedAccessToken();
+  const isPerm = localStorage.getItem('smart_hisab_drive_permanently_connected') === 'true';
+  const hasUser = Boolean(firebaseAuth.currentUser || getCurrentGoogleUser());
+  return Boolean(token || (isPerm && hasUser) || isPerm);
+}
+
+/**
+ * Explicit user-triggered Google Drive OAuth connect
+ */
+export async function connectGoogleDrive() {
+  const res = await signInWithGoogle();
+  return res?.accessToken || null;
 }
 
 /**

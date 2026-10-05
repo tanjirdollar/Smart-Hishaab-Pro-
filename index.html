@@ -70,8 +70,8 @@
 
         <div class="passcode-error" id="passcodeError" style="margin-top: 14px;"></div>
 
-        <!-- Quick Terminal PIN Keypad (For already authenticated active devices) -->
-        <div id="quickPinSection" style="margin-top: 18px; border-top: 1px solid var(--border-subtle); padding-top: 14px; display: none;">
+        <!-- Quick Terminal PIN Keypad -->
+        <div id="quickPinSection" style="margin-top: 18px; border-top: 1px solid var(--border-subtle); padding-top: 14px; display: block;">
           <div style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 10px;">অথবা ডিভাইস কুইক পিন দিয়ে প্রবেশ করুন:</div>
           <div class="pin-dots" id="pinDots" style="margin-bottom: 14px;">
             <div class="pin-dot" id="dot0"></div>
@@ -114,6 +114,12 @@
 
         <!-- Header Controls (Sync, Theme, Settings) -->
         <div class="header-controls-group">
+          <!-- ✨ AI Smart Voice & Text Assistant Button -->
+          <button class="btn-ai-header" id="aiHeaderBtn" onclick="window.SmartHisab.openAiModal()" title="AI দিয়ে মুখে বলে বা লিখে হিসাব এন্ট্রি করুন">
+            <span class="ai-sparkle-icon">✨</span>
+            <span class="ai-btn-text">AI এন্ট্রি</span>
+          </button>
+
           <!-- Live Sync Status Indicator -->
           <div class="sync-pill" id="syncPill" onclick="window.SmartHisab.triggerManualSync()" title="ডাটাবেস সিঙ্ক স্ট্যাটাস (ক্লিক করে রিফ্রেশ করুন)">
             <span class="sync-dot live" id="syncDot"></span>
@@ -184,6 +190,9 @@
 
       <!-- Quick Action Drawer Menu -->
       <div class="quick-menu" id="quickMenu">
+        <button class="quick-menu-item ai-quick-item" onclick="window.SmartHisab.toggleQuickMenu(); window.SmartHisab.openAiModal()" style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.18), rgba(99, 102, 241, 0.18)); border: 1px solid rgba(168, 85, 247, 0.45); color: #C084FC; font-weight: 700;">
+          <span style="color: #E879F9;">[✨]</span> AI স্মার্ট এন্ট্রি (মুখে বলে / লিখে)
+        </button>
         <button class="quick-menu-item" onclick="window.SmartHisab.toggleQuickMenu(); window.SmartHisab.openAddModal('income')">
           <span style="color: var(--green-electric);">[+]</span> নতুন আয় (Income)
         </button>
@@ -262,6 +271,100 @@
         <button type="button" class="btn btn-secondary" onclick="window.SmartHisab.closeRecordDetailModal()">বন্ধ করুন</button>
         <button type="button" class="btn btn-secondary" id="detailPendingToggleBtn" style="white-space: nowrap;">⏳ পেন্ডিং</button>
         <button type="button" class="btn btn-primary" id="detailEditBtn">✏️ সম্পাদন করুন</button>
+      </div>
+    </div>
+
+    <!-- ✨ AI Natural Language Voice & Text Entry Modal -->
+    <div class="modal-overlay" id="aiModalOverlay" onclick="window.SmartHisab.closeAiModal()"></div>
+    <div class="bottom-sheet ai-modal-sheet" id="aiEntryModal">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header" style="border-bottom: 1px solid rgba(168, 85, 247, 0.25);">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 1.3rem;">✨</span>
+          <div>
+            <h3 class="sheet-title" style="color: var(--text-pure); margin: 0; font-size: 1.05rem;">AI স্মার্ট হিসাব এন্ট্রি</h3>
+            <p style="font-size: 0.72rem; color: #C084FC; margin: 2px 0 0 0;">মুখে বলুন বা বাংলায় লিখে কমান্ড দিন</p>
+          </div>
+        </div>
+        <button type="button" class="icon-btn" onclick="window.SmartHisab.closeAiModal()">✕</button>
+      </div>
+
+      <div class="ai-modal-body" style="padding: 16px;">
+        <!-- Input & Voice Bar -->
+        <div class="ai-input-wrapper">
+          <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-muted); margin-bottom: 6px;">
+            হিসাবের বিবরণ লিখুন বা মাইকে বলুন:
+          </label>
+          <div style="position: relative;">
+            <textarea id="aiPromptInput" class="form-textarea" rows="3" placeholder="যেমন: আজ ড্রপ শোল্ডার টি-শার্ট ১০০ পিস রেট ৫০০ টাকা, অথবা পরিবার খরচ ৩৫০০ টাকা বাজার করেছি..." style="padding-right: 48px; border-color: rgba(168, 85, 247, 0.4); font-size: 0.9rem; line-height: 1.5;"></textarea>
+            <button type="button" id="aiVoiceBtn" class="ai-voice-btn" onclick="window.SmartHisab.toggleAiVoiceRecording()" title="মুখে বলতে ক্লিক করুন">
+              🎙️
+            </button>
+          </div>
+          <div id="aiVoiceStatus" style="display: none; font-size: 0.72rem; color: var(--red-coral); margin-top: 4px; align-items: center; gap: 6px;">
+            <span class="pulsing-mic-dot"></span> শুনছি... বাংলায় বলুন (কথা শেষ হলে আবার মাইকে ক্লিক করুন)
+          </div>
+        </div>
+
+        <!-- Quick Sample Chips -->
+        <div style="margin-top: 10px;">
+          <div style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 6px;">⚡ চটজলদি উদাহরণের জন্য ট্যাপ করুন:</div>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <button type="button" class="chip-btn" onclick="window.SmartHisab.setAiPromptExample('পোলো শার্ট ১২০ পিস রেট ৬৫০ টাকা')">
+              👔 পোলো শার্ট ১২০ পিস
+            </button>
+            <button type="button" class="chip-btn" onclick="window.SmartHisab.setAiPromptExample('পরিবার খরচ ৩৫০০ টাকা বাজার ও অন্যান্য')">
+              🛒 পরিবার খরচ ৩৫০০৳
+            </button>
+            <button type="button" class="chip-btn" onclick="window.SmartHisab.setAiPromptExample('পাইকারি বিক্রি ২৫০০০ টাকা ক্যাশ রিসিভ')">
+              💰 পাইকারি বিক্রি ২৫,০০০৳
+            </button>
+            <button type="button" class="chip-btn" onclick="window.SmartHisab.setAiPromptExample('সোনালী ব্যাংক কিস্তি পরিশোধ ৫০০০ টাকা')">
+              🤝 ব্যাংক লোন পরিশোধ ৫০০০৳
+            </button>
+          </div>
+        </div>
+
+        <!-- Process Button -->
+        <div style="margin-top: 16px;">
+          <button type="button" id="aiProcessBtn" class="btn btn-primary" style="width: 100%; background: linear-gradient(135deg, #A855F7, #6366F1); color: #fff; font-weight: 700; border: none; padding: 12px; gap: 8px;" onclick="window.SmartHisab.processAiPrompt()">
+            ✨ AI দিয়ে হিসাব বিশ্লেষণ করুন
+          </button>
+        </div>
+
+        <!-- Loading Scanner Indicator -->
+        <div id="aiLoadingBox" style="display: none; margin-top: 16px; padding: 18px; text-align: center; background: rgba(168, 85, 247, 0.08); border: 1px dashed rgba(168, 85, 247, 0.4); border-radius: var(--radius-sm);">
+          <div class="ai-spinner"></div>
+          <div style="font-size: 0.85rem; font-weight: 600; color: #C084FC; margin-top: 8px;">
+            🤖 AI আপনার হিসাবটি বিশ্লেষণ করছে...
+          </div>
+          <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 4px;">
+            খাত, টাকার পরিমাণ ও ফরম্যাট স্বয়ংক্রিয়ভাবে সাজানো হচ্ছে
+          </div>
+        </div>
+
+        <!-- AI Parsed Result Preview Card -->
+        <div id="aiResultCard" style="display: none; margin-top: 16px; background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(168, 85, 247, 0.4); border-radius: var(--radius-sm); padding: 14px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span id="aiResultBadge" class="badge-term badge-work">প্রোডাকশন</span>
+              <span style="font-size: 0.72rem; color: var(--green-electric);">✓ শনাক্তকরণ সফল</span>
+            </div>
+            <span style="font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono);">Google Sheets Ready</span>
+          </div>
+
+          <div id="aiResultSummary" style="font-size: 0.95rem; font-weight: 700; color: var(--text-pure); margin-bottom: 12px;"></div>
+          <div id="aiResultDetailsGrid" class="detail-grid" style="margin-bottom: 14px;"></div>
+
+          <div class="ai-sticky-actions">
+            <button type="button" class="btn btn-secondary" style="flex: 1; font-size: 0.82rem;" onclick="window.SmartHisab.editAiResultInModal()">
+              ✏️ এডিট / যাচাই
+            </button>
+            <button type="button" id="aiConfirmSaveBtn" class="btn btn-primary" style="flex: 2; font-size: 0.85rem; background: linear-gradient(135deg, #10B981, #059669); color: #fff; border: none; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);" onclick="window.SmartHisab.confirmAndSaveAiEntry()">
+              ✓ Google Sheets ও অ্যাপে সেভ করুন
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

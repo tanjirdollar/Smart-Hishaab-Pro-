@@ -11,12 +11,12 @@ export const DEFAULT_PASSCODE = '1234';
 
 // Exact 6-Sheet Schemas matching Google Sheets
 export const SCHEMAS = {
-  income: ['ID', 'Date', 'Category', 'Amount', 'Note'],
-  expense: ['ID', 'Date', 'Category', 'Amount', 'Note'],
-  production: ['ID', 'Date', 'Type', 'Work Name', 'Size', 'Color', 'Pcs', 'Dozen', 'Rate', 'Earned', 'Received', 'Note', 'Image_URL'],
-  loan: ['ID', 'Date', 'Description', 'Loan Taken', 'Loan Paid', 'Note'],
+  income: ['ID', 'Date', 'Category', 'Amount', 'Note', 'Status'],
+  expense: ['ID', 'Date', 'Category', 'Amount', 'Note', 'Status'],
+  production: ['ID', 'Date', 'Type', 'Tag', 'Work Name', 'Size', 'Color', 'Pcs', 'Dozen', 'Rate', 'Earned', 'Received', 'Start Time', 'End Time', 'Duration', 'Note', 'Image_URL', 'Status'],
+  loan: ['ID', 'Date', 'Description', 'Loan Taken', 'Loan Paid', 'Note', 'Status'],
   fund: ['ID', 'Date', 'Fund Name', 'Target Budget', 'Status'],
-  fund_transaction: ['ID', 'Date', 'Fund ID', 'Type', 'Category/Note', 'Amount', 'Note']
+  fund_transaction: ['ID', 'Date', 'Fund ID', 'Type', 'Category/Note', 'Amount', 'Note', 'Status']
 };
 
 /**
@@ -507,3 +507,56 @@ export function formatTaka(amount) {
 export function formatNum(num) {
   return (Number(num) || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
+
+/**
+ * Converts 24-hour time "14:30" or "09:15" to 12-hour format "02:30 PM" / "09:15 AM"
+ */
+export function formatTime12(timeStr) {
+  if (!timeStr || typeof timeStr !== 'string') return '';
+  const parts = timeStr.trim().split(':');
+  if (parts.length < 2) return timeStr;
+  let h = parseInt(parts[0], 10);
+  const m = parts[1].padStart(2, '0');
+  if (isNaN(h)) return timeStr;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12;
+  h = h ? h : 12; // 0 becomes 12
+  const hStr = String(h).padStart(2, '0');
+  return `${hStr}:${m} ${ampm}`;
+}
+
+/**
+ * Calculates human duration string between two 24-hour time strings "09:00" and "14:30"
+ * Returns e.g. "৫ ঘণ্টা ৩০ মিনিট" or "৪৫ মিনিট"
+ */
+export function calculateTimeDuration(startTime, endTime) {
+  if (!startTime || !endTime) return '';
+  const sParts = startTime.split(':').map(Number);
+  const eParts = endTime.split(':').map(Number);
+  if (sParts.length < 2 || eParts.length < 2 || isNaN(sParts[0]) || isNaN(eParts[0])) return '';
+
+  let startMins = sParts[0] * 60 + sParts[1];
+  let endMins = eParts[0] * 60 + eParts[1];
+
+  // Handle overnight shift if end time is before start time
+  if (endMins < startMins) {
+    endMins += 24 * 60;
+  }
+
+  const diffMins = endMins - startMins;
+  if (diffMins <= 0) return '০ মিনিট';
+
+  const hours = Math.floor(diffMins / 60);
+  const mins = diffMins % 60;
+
+  const toBn = (n) => String(n).replace(/[0-9]/g, d => '০১২৩৪৫৬৭৮৯'[d]);
+
+  if (hours > 0 && mins > 0) {
+    return `${toBn(hours)} ঘণ্টা ${toBn(mins)} মিনিট`;
+  } else if (hours > 0) {
+    return `${toBn(hours)} ঘণ্টা`;
+  } else {
+    return `${toBn(mins)} মিনিট`;
+  }
+}
+

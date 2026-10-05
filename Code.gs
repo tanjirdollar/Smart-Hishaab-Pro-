@@ -29,7 +29,7 @@ const DRIVE_FOLDER_NAME = "Smart_Hisab_Uploads";
 const SCHEMAS = {
   Income: ['ID', 'Date', 'Category', 'Amount', 'Note', 'Status'],
   Expense: ['ID', 'Date', 'Category', 'Amount', 'Note', 'Status'],
-  Production: ['ID', 'Date', 'Type', 'Work Name', 'Size', 'Color', 'Pcs', 'Dozen', 'Rate', 'Earned', 'Received', 'Note', 'Image_URL', 'Status'],
+  Production: ['ID', 'Date', 'Type', 'Tag', 'Work Name', 'Size', 'Color', 'Pcs', 'Dozen', 'Rate', 'Earned', 'Received', 'Start Time', 'End Time', 'Duration', 'Note', 'Image_URL', 'Status'],
   Loan: ['ID', 'Date', 'Description', 'Loan Taken', 'Loan Paid', 'Note', 'Status'],
   Fund: ['ID', 'Date', 'Fund Name', 'Target Budget', 'Status'],
   Fund_Transaction: ['ID', 'Date', 'Fund ID', 'Type', 'Category/Note', 'Amount', 'Note', 'Status']
@@ -494,8 +494,32 @@ function doPost(e) {
         record.Status = 'Completed';
       }
 
-      // Map row values according to header ordering
-      const rowValues = headers.map(header => {
+      // Get actual sheet headers from row 1 to guarantee exact column mapping
+      let actualHeaders = sheet.getLastColumn() > 0 ? sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), headers.length)).getValues()[0].filter(Boolean) : [];
+      if (!actualHeaders || actualHeaders.length === 0) {
+        actualHeaders = headers;
+        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      } else {
+        // Ensure Status, Tag and Production Timing columns exist
+        if (sheetName === 'Production') {
+          const prodCols = ['Tag', 'Start Time', 'End Time', 'Duration', 'Status'];
+          prodCols.forEach(col => {
+            if (!actualHeaders.includes(col)) {
+              const nextCol = sheet.getLastColumn() + 1;
+              sheet.getRange(1, nextCol).setValue(col).setFontWeight('bold').setBackground('#080B10').setFontColor('#FFC72C');
+              actualHeaders.push(col);
+            }
+          });
+        } else if (!actualHeaders.includes('Status')) {
+          const nextCol = actualHeaders.length + 1;
+          sheet.getRange(1, nextCol).setValue('Status');
+          sheet.getRange(1, nextCol).setBackground('#0F172A').setFontColor('#F8FAFC').setFontWeight('bold');
+          actualHeaders.push('Status');
+        }
+      }
+
+      // Map row values according to actual header ordering
+      const rowValues = actualHeaders.map(header => {
         let val = record[header];
         if (val === undefined || val === null) return '';
         return val;
@@ -600,8 +624,17 @@ function doPost(e) {
         actualHeaders = headers;
       }
       
-      // Ensure 'Status' column exists on the sheet
-      if (!actualHeaders.includes('Status')) {
+      // Ensure required columns exist on the sheet
+      if (sheetName === 'Production') {
+        const prodCols = ['Start Time', 'End Time', 'Duration', 'Status'];
+        prodCols.forEach(col => {
+          if (!actualHeaders.includes(col)) {
+            const nextCol = sheet.getLastColumn() + 1;
+            sheet.getRange(1, nextCol).setValue(col).setFontWeight('bold').setBackground('#080B10').setFontColor('#FFC72C');
+            actualHeaders.push(col);
+          }
+        });
+      } else if (!actualHeaders.includes('Status')) {
         const nextCol = sheet.getLastColumn() + 1;
         sheet.getRange(1, nextCol).setValue('Status').setFontWeight('bold').setBackground('#080B10').setFontColor('#FFC72C');
         actualHeaders.push('Status');
