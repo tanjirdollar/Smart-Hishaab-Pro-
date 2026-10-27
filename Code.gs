@@ -1,31 +1,17 @@
 /**
- * Smart Hisab Pro (স্মার্ট হিসাব প্রো) - Google Apps Script Backend REST API
- * Neo-Fintech / Trading Terminal Edition with Drive Image Storage & Passcode Guard
+ * Smart Hisab Pro — Google Apps Script backend v3 (secured)
  *
- * Setup Guide:
- * 1. Open Google Sheets (https://sheets.new)
- * 2. Extensions > Apps Script
- * 3. Replace all content in Code.gs with this code and Save (Ctrl+S)
- * 4. Click "Deploy" > "New deployment"
- * 5. Type: "Web app"
- * 6. Description: "Smart Hisab Pro v2.0"
- * 7. Execute as: "Me"
- * 8. Who has access: "Anyone"
- * 9. Click "Deploy", Authorize permissions (Allow Google Drive & Sheets access)
- * 10. Copy Web App URL (ends with /exec) into Smart Hisab Pro Settings.
+ * শুধু আপনার Vercel সার্ভার (যার কাছে SH_SECRET আছে) এই স্ক্রিপ্টে কথা বলতে পারবে।
+ * - কোনো ডিফল্ট পিন নেই, কোনো রিসেট-লিংক নেই, ফাঁকা টোকেন গ্রহণযোগ্য নয়।
+ * - SH_SECRET সেট করা না থাকলে সবকিছু বন্ধ (fail-closed)।
+ * - ডুপ্লিকেট আইডি আটকানো, আপডেটে অন্য কলাম মুছে যাওয়া বন্ধ, লক দিয়ে একসঙ্গে লেখা নিরাপদ।
  *
- * Security:
- * Default Passcode / Security Token is "1234".
- * To change the token, update DEFAULT_SECURITY_TOKEN below or use the 'setToken' API.
+ * সেটআপ: Extensions > Apps Script > এই কোড বসান > Project Settings > Script properties-এ
+ * SH_SECRET যোগ করুন > Deploy > New deployment > Web app (Execute as: Me, Access: Anyone) > URL কপি করুন।
  */
+const DRIVE_FOLDER_NAME = 'Smart_Hisab_Uploads';
+const MAX_IMAGE_BASE64 = 7 * 1024 * 1024;
 
-// Default Security Token / Passcode (fallback ONLY for initial first run if property not set)
-const DEFAULT_SECURITY_TOKEN = "1234";
-
-// Dedicated Google Drive folder for production attachments
-const DRIVE_FOLDER_NAME = "Smart_Hisab_Uploads";
-
-// Exact 6-sheet schema definitions with persistent Status tracking
 const SCHEMAS = {
   Income: ['ID', 'Date', 'Category', 'Amount', 'Note', 'Status'],
   Expense: ['ID', 'Date', 'Category', 'Amount', 'Note', 'Status'],
@@ -34,742 +20,275 @@ const SCHEMAS = {
   Fund: ['ID', 'Date', 'Fund Name', 'Target Budget', 'Status'],
   Fund_Transaction: ['ID', 'Date', 'Fund ID', 'Type', 'Category/Note', 'Amount', 'Note', 'Status']
 };
+const NUMERIC = { Income: ['Amount'], Expense: ['Amount'], Production: ['Pcs', 'Rate', 'Received'], Loan: ['Loan Taken', 'Loan Paid'], Fund: ['Target Budget'], Fund_Transaction: ['Amount'] };
+const RESULT_KEYS = { Income: 'income', Expense: 'expense', Production: 'production', Loan: 'loan', Fund: 'fund', Fund_Transaction: 'fund_transaction' };
 
-/**
- * Normalizes user-submitted sheet names to match exact schema keys
- */
-function resolveSheetName(rawName) {
-  if (!rawName) return null;
-  const clean = String(rawName).trim().toLowerCase().replace(/[-_ ]/g, '');
-  const mapping = {
-    'income': 'Income',
-    'expense': 'Expense',
-    'production': 'Production',
-    'loan': 'Loan',
-    'fund': 'Fund',
-    'fundtransaction': 'Fund_Transaction',
-    'fundtransactions': 'Fund_Transaction'
-  };
-  return mapping[clean] || null;
+function resolveSheetName(raw) {
+  const k = String(raw || '').trim().toLowerCase().replace(/[-_ ]/g, '');
+  return ({ income: 'Income', expense: 'Expense', production: 'Production', loan: 'Loan', fund: 'Fund', fundtransaction: 'Fund_Transaction', fundtransactions: 'Fund_Transaction' })[k] || null;
+}
+function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+function fail_(msg) { return json_({ success: false, status: 'error', error: msg }); }
+
+function safeEqual_(a, b) {
+  a = String(a || ''); b = String(b || '');
+  if (a.length !== b.length) return false;
+  let r = 0;
+  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return r === 0;
+}
+function authorized_(secret) {
+  const expected = PropertiesService.getScriptProperties().getProperty('SH_SECRET');
+  if (!expected || expected.length < 16) return false; // fail-closed
+  return safeEqual_(secret, expected);
 }
 
-/**
- * Retrieves configured security PIN from Script Properties.
- * Automatically initializes APP_PIN with default "1234" ONLY if neither APP_PIN nor SECURITY_TOKEN exists.
- */
-function getOrInitAppPin() {
-  try {
-    const props = PropertiesService.getScriptProperties();
-    let pin = props.getProperty('APP_PIN');
-    if (!pin) {
-      pin = props.getProperty('SECURITY_TOKEN'); // legacy fallback
-    }
-    if (!pin) {
-      pin = DEFAULT_SECURITY_TOKEN;
-      props.setProperty('APP_PIN', DEFAULT_SECURITY_TOKEN);
-      props.setProperty('SECURITY_TOKEN', DEFAULT_SECURITY_TOKEN);
-    }
-    return String(pin).trim();
-  } catch (e) {
-    return DEFAULT_SECURITY_TOKEN;
+function doGet() { return json_({ success: true, status: 'success', message: 'Smart Hisab API v3' }); }
+
+function today_() { return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd'); }
+function fmtDate_(v) { return v instanceof Date ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd') : v; }
+function newId_() { return 'TRX-' + Utilities.getUuid().replace(/-/g, '').slice(0, 14); }
+
+function ensureSheet_(ss, name) {
+  const headers = SCHEMAS[name];
+  let sh = ss.getSheetByName(name);
+  if (!sh) sh = ss.insertSheet(name);
+  if (sh.getLastRow() === 0) {
+    sh.appendRow(headers);
+    sh.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+    sh.setFrozenRows(1);
   }
+  return sh;
 }
-
-/**
- * Retrieves configured security token for backwards compatibility
- */
-function getConfiguredToken() {
-  return getOrInitAppPin();
-}
-
-/**
- * Validates request token/PIN with multi-layer authorization:
- * 1. Matches active cloud APP_PIN
- * 2. Matches master default PIN "1234"
- * 3. Authenticated Google Account verified (tanjir.dollar@gmail.com)
- * 4. Resilient blank-token fallback: The private Web App URL is already secured
- */
-function isAuthorized(e, payload) {
-  const expectedToken = getOrInitAppPin();
-
-  let provided = '';
-  if (e && e.parameter) {
-    provided = e.parameter.pin || e.parameter.token || e.parameter.passcode || '';
-  }
-  if (!provided && payload) {
-    provided = payload.pin || payload.token || payload.passcode || '';
-  }
-
-  const cleanProvided = String(provided || '').trim();
-  const cleanExpected = String(expectedToken || '').trim();
-
-  // 1. Exact match with active Script Property PIN
-  if (cleanProvided && cleanProvided === cleanExpected) return true;
-
-  // 2. Default Master PIN ("1234") always accepted & self-heals
-  if (cleanProvided === DEFAULT_SECURITY_TOKEN || cleanProvided === '1234') {
-    if (cleanExpected !== DEFAULT_SECURITY_TOKEN) {
-      try {
-        const props = PropertiesService.getScriptProperties();
-        props.setProperty('APP_PIN', DEFAULT_SECURITY_TOKEN);
-        props.setProperty('SECURITY_TOKEN', DEFAULT_SECURITY_TOKEN);
-      } catch (err) {}
-    }
-    return true;
-  }
-
-  // 3. Authenticated Google Account verified (Owner: tanjir.dollar@gmail.com)
-  const userEmail = (e && e.parameter && (e.parameter.userEmail || e.parameter.email)) ||
-                    (payload && (payload.userEmail || payload.email)) || '';
-  if (userEmail && String(userEmail).toLowerCase().includes('tanjir.dollar@gmail.com')) {
-    return true;
-  }
-
-  // 4. If token is blank, permit private access
-  if (!cleanProvided) {
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * Initializes required sheets and styled headers if missing
- */
-function setupSheets(ss) {
-  Object.keys(SCHEMAS).forEach(sheetName => {
-    let sheet = ss.getSheetByName(sheetName);
-    const headers = SCHEMAS[sheetName];
-    if (!sheet) {
-      sheet = ss.insertSheet(sheetName);
-      sheet.appendRow(headers);
-      sheet.getRange(1, 1, 1, headers.length)
-        .setFontWeight('bold')
-        .setBackground('#080B10')
-        .setFontColor('#FFC72C');
-      sheet.setFrozenRows(1);
-    } else {
-      if (sheet.getLastRow() === 0) {
-        sheet.appendRow(headers);
-        sheet.getRange(1, 1, 1, headers.length)
-          .setFontWeight('bold')
-          .setBackground('#080B10')
-          .setFontColor('#FFC72C');
-        sheet.setFrozenRows(1);
-      } else {
-        // Ensure new columns (e.g. Image_URL in Production) exist if sheet was created earlier
-        const currentHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn() || 1).getValues()[0];
-        headers.forEach(h => {
-          if (!currentHeaders.includes(h)) {
-            const nextCol = sheet.getLastColumn() + 1;
-            sheet.getRange(1, nextCol).setValue(h).setFontWeight('bold').setBackground('#080B10').setFontColor('#FFC72C');
-          }
-        });
-      }
+// শুধু অনুপস্থিত কলাম ডানদিকে যোগ করে; বিদ্যমান ডেটা কখনো সরায় না।
+function headersOf_(sh, name) {
+  const lastCol = Math.max(sh.getLastColumn(), 1);
+  let cur = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (h) { return String(h || '').trim(); });
+  while (cur.length && !cur[cur.length - 1]) cur.pop();
+  SCHEMAS[name].forEach(function (h) {
+    if (cur.indexOf(h) === -1) {
+      sh.getRange(1, cur.length + 1).setValue(h).setFontWeight('bold');
+      cur.push(h);
     }
   });
+  return cur;
 }
-
-/**
- * Helper to build JSON ContentService response
- */
-function createJsonResponse(data) {
-  return ContentService.createTextOutput(JSON.stringify(data))
-    .setMimeType(ContentService.MimeType.JSON);
+function findRow_(sh, id) {
+  const last = sh.getLastRow();
+  if (last < 2) return -1;
+  const ids = sh.getRange(2, 1, last - 1, 1).getValues();
+  for (let i = 0; i < ids.length; i++) if (String(ids[i][0]) === String(id)) return i + 2;
+  return -1;
 }
+function num_(v) { const n = Number(v); return isFinite(n) ? n : NaN; }
 
-/**
- * Saves Base64 image directly to Google Drive in folder "Smart_Hisab_Uploads"
- * Sets public link permission and returns direct preview URL
- */
-function saveBase64ImageToDrive(base64String, fileName) {
-  if (!base64String || typeof base64String !== 'string') return '';
-
-  try {
-    let cleanBase64 = base64String;
-    let contentType = 'image/jpeg';
-
-    if (base64String.includes(';base64,')) {
-      const parts = base64String.split(';base64,');
-      const prefix = parts[0];
-      cleanBase64 = parts[1];
-      if (prefix.includes(':')) {
-        contentType = prefix.split(':')[1];
-      }
-    }
-
-    const decodedBytes = Utilities.base64Decode(cleanBase64);
-    const blobName = fileName || ('prod_' + new Date().getTime() + '.jpg');
-    const blob = Utilities.newBlob(decodedBytes, contentType, blobName);
-
-    // Get or create dedicated folder in Google Drive
-    let targetFolder;
-    const folders = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
-    if (folders.hasNext()) {
-      targetFolder = folders.next();
-    } else {
-      targetFolder = DriveApp.createFolder(DRIVE_FOLDER_NAME);
-    }
-
-    const file = targetFolder.createFile(blob);
-    
-    // Set file permission so it is viewable directly in browser
-    try {
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    } catch (shareErr) {
-      Logger.log('Drive share permission notice: ' + shareErr);
-    }
-
-    const fileId = file.getId();
-    // High-reliability universal image thumbnail preview URL (supported across all modern browsers)
-    return 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=s1000';
-  } catch (err) {
-    Logger.log('saveBase64ImageToDrive error: ' + err);
-    return '';
+function validate_(name, rec) {
+  const cols = NUMERIC[name] || [];
+  for (let i = 0; i < cols.length; i++) {
+    const c = cols[i];
+    if (rec[c] === undefined || rec[c] === null || rec[c] === '') continue;
+    const n = num_(rec[c]);
+    if (isNaN(n) || n < 0 || n > 1e10) return 'অবৈধ সংখ্যা: ' + c;
+    rec[c] = n;
+  }
+  return null;
+}
+// পুরোনো ব্যাকএন্ডের সঙ্গে হুবহু একই সূত্র — মোট পাওনা/বকেয়া বদলাবে না।
+function applyProduction_(rec) {
+  const type = rec.Type || 'Work';
+  if (type === 'Work') {
+    const pcs = Number(rec.Pcs) || 0, rate = Number(rec.Rate) || 0;
+    const dozen = Number((pcs / 12).toFixed(2));
+    rec.Dozen = dozen; rec.Earned = Number((dozen * rate).toFixed(2)); rec.Received = 0;
+  } else if (type === 'Withdrawal') {
+    rec.Received = Number(rec.Received) || Number(rec.Amount) || 0;
+    rec.Earned = 0; rec.Pcs = 0; rec.Dozen = 0; rec.Rate = 0;
   }
 }
-
-/**
- * Handle GET Requests: token verification & data retrieval
- */
-function doGet(e) {
-  try {
-    const action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'getAll';
-
-    // Public Ping to check connectivity
-    if (action === 'ping') {
-      return createJsonResponse({
-        success: true,
-        status: 'success',
-        message: 'Smart Hisab Pro Terminal API is operational',
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Public Verify PIN: validates entered PIN against active cloud APP_PIN or default 1234
-    if (action === 'verifyPin' || action === 'checkPin') {
-      const activePin = getOrInitAppPin();
-      const provided = (e && e.parameter && (e.parameter.pin || e.parameter.passcode || e.parameter.token)) || '';
-      const cleanProvided = String(provided).trim();
-      const isValid = (cleanProvided === String(activePin).trim()) || (cleanProvided === DEFAULT_SECURITY_TOKEN) || (cleanProvided === '1234');
-      
-      // Auto self-heal if default 1234 was used
-      if (isValid && cleanProvided === '1234') {
-        try {
-          const props = PropertiesService.getScriptProperties();
-          props.setProperty('APP_PIN', DEFAULT_SECURITY_TOKEN);
-          props.setProperty('SECURITY_TOKEN', DEFAULT_SECURITY_TOKEN);
-        } catch (err) {}
-      }
-
-      return createJsonResponse({
-        success: isValid,
-        status: isValid ? 'success' : 'error',
-        valid: isValid,
-        message: isValid ? 'PIN verified successfully' : 'ভুল পিন (Invalid PIN)'
-      });
-    }
-
-    // Emergency Reset PIN action
-    if (action === 'resetPin' || action === 'resetToken') {
-      try {
-        const props = PropertiesService.getScriptProperties();
-        props.setProperty('APP_PIN', DEFAULT_SECURITY_TOKEN);
-        props.setProperty('SECURITY_TOKEN', DEFAULT_SECURITY_TOKEN);
-        return createJsonResponse({
-          success: true,
-          status: 'success',
-          message: 'পাসকোড সফলভাবে ১২৩৪ এ রিসেট করা হয়েছে',
-          pin: DEFAULT_SECURITY_TOKEN
-        });
-      } catch (err) {
-        return createJsonResponse({ success: false, error: err.toString() });
-      }
-    }
-
-    // Security Gate: Token Check
-    if (!isAuthorized(e, null)) {
-      return createJsonResponse({
-        success: false,
-        status: 'error',
-        error: 'UNAUTHORIZED: Security Passcode/Token is invalid or missing'
-      });
-    }
-
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    setupSheets(ss);
-
-    if (action === 'init') {
-      return createJsonResponse({
-        success: true,
-        status: 'success',
-        message: 'Google Sheets tables initialized successfully'
-      });
-    }
-
-    // Default: Fetch all records from all 6 sheets
-    const result = {
-      income: [],
-      expense: [],
-      production: [],
-      loan: [],
-      fund: [],
-      fund_transaction: []
-    };
-
-    Object.keys(SCHEMAS).forEach(schemaSheetName => {
-      const sheet = ss.getSheetByName(schemaSheetName);
-      const headers = SCHEMAS[schemaSheetName];
-      const data = [];
-
-      if (sheet && sheet.getLastRow() > 1) {
-        const numRows = sheet.getLastRow() - 1;
-        const numCols = sheet.getLastColumn();
-        const headerRow = sheet.getRange(1, 1, 1, numCols).getValues()[0];
-        const rawValues = sheet.getRange(2, 1, numRows, numCols).getValues();
-
-        rawValues.forEach((row, rowIndex) => {
-          if (!row[0] && row[0] !== 0) return; // skip rows without ID
-          const item = { _row: rowIndex + 2 };
-
-          headerRow.forEach((colHeader, colIdx) => {
-            if (!colHeader) return;
-            let val = row[colIdx];
-            if (val instanceof Date) {
-              val = Utilities.formatDate(val, Session.getScriptTimeZone(), 'yyyy-MM-dd');
-            }
-            item[colHeader] = val;
-          });
-
-          data.push(item);
-        });
-      }
-
-      const lowerKey = (schemaSheetName === 'Fund_Transaction') ? 'fund_transaction' : schemaSheetName.toLowerCase();
-      result[lowerKey] = data;
-    });
-
-    return createJsonResponse({
-      success: true,
-      status: 'success',
-      data: result,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (err) {
-    return createJsonResponse({
-      success: false,
-      status: 'error',
-      error: err.toString()
-    });
-  }
+function normStatus_(rec, fallback) {
+  if (rec.IsPending === true || rec.IsPending === 'true' || rec.Status === 'Pending' || rec.Status === 'পেন্ডিং') rec.Status = 'Pending';
+  else if (rec.IsPending === false || rec.IsPending === 'false' || rec.Status === 'Completed') rec.Status = 'Completed';
+  else if (!rec.Status) rec.Status = fallback || 'Completed';
+  delete rec.IsPending;
 }
 
-/**
- * Handle POST Requests: CRUD operations with LockService & Drive upload
- */
+function saveImage_(b64, fileName) {
+  if (!b64 || typeof b64 !== 'string') return null;
+  if (b64.length > MAX_IMAGE_BASE64) throw new Error('ছবি অনেক বড়');
+  let data = b64, type = 'image/jpeg';
+  const p = b64.indexOf(';base64,');
+  if (p > -1) { data = b64.slice(p + 8); type = b64.slice(0, p).replace('data:', '') || type; }
+  if (!/^image\/(jpeg|png|webp|gif)$/.test(type)) throw new Error('শুধু ছবির ফাইল গ্রহণযোগ্য');
+  const safe = String(fileName || ('img_' + Date.now())).replace(/[^\w\u0980-\u09FF.-]/g, '_').slice(0, 80);
+  const blob = Utilities.newBlob(Utilities.base64Decode(data), type, safe.indexOf('.') > -1 ? safe : safe + '.jpg');
+  const it = DriveApp.getFoldersByName(DRIVE_FOLDER_NAME);
+  const folder = it.hasNext() ? it.next() : DriveApp.createFolder(DRIVE_FOLDER_NAME);
+  const file = folder.createFile(blob);
+  try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (e) {}
+  const id = file.getId();
+  const url = 'https://drive.google.com/thumbnail?id=' + id + '&sz=s1000';
+  return { fileId: id, url: url, directImageUrl: url, webViewLink: 'https://drive.google.com/file/d/' + id + '/view' };
+}
+
+function readAll_(ss) {
+  const out = { income: [], expense: [], production: [], loan: [], fund: [], fund_transaction: [] };
+  Object.keys(SCHEMAS).forEach(function (name) {
+    const sh = ss.getSheetByName(name);
+    if (!sh || sh.getLastRow() < 2) return;
+    const cols = sh.getLastColumn();
+    const heads = sh.getRange(1, 1, 1, cols).getValues()[0];
+    const rows = sh.getRange(2, 1, sh.getLastRow() - 1, cols).getValues();
+    rows.forEach(function (row, i) {
+      if (row[0] === '' || row[0] === null) return;
+      const item = { _row: i + 2 };
+      heads.forEach(function (h, c) {
+        if (!h) return;
+        const v = fmtDate_(row[c]);
+        // একই নামের কলাম দুইবার থাকলে ফাঁকা মান যেন আসল মান মুছে না দেয়
+        if (item[h] === undefined || (v !== '' && v !== null)) item[h] = v;
+      });
+      out[RESULT_KEYS[name]].push(item);
+    });
+  });
+  return out;
+}
+
 function doPost(e) {
+  let p;
+  try { p = JSON.parse(e.postData.contents); } catch (err) { return fail_('অবৈধ অনুরোধ'); }
+  if (!authorized_(p.secret)) return fail_('UNAUTHORIZED');
   const lock = LockService.getScriptLock();
   try {
-    // Wait up to 30s to serialize mutations and prevent race conditions
     lock.waitLock(30000);
-
-    let payload = {};
-    if (e && e.postData && e.postData.contents) {
-      try {
-        payload = JSON.parse(e.postData.contents);
-      } catch (err) {
-        payload = e.parameter || {};
-      }
-    } else if (e && e.parameter) {
-      payload = e.parameter;
-    }
-
-    const action = payload.action;
-
-    // Action: Set / Update Master Security PIN (Cross-Browser Global Storage)
-    if (action === 'updatePin' || action === 'setToken') {
-      const currentPin = getOrInitAppPin();
-      const oldPin = payload.oldPin || payload.oldToken || payload.oldPasscode;
-      const newPin = payload.newPin || payload.newToken || payload.newPasscode;
-
-      if (currentPin && String(oldPin).trim() !== String(currentPin).trim()) {
-        return createJsonResponse({
-          success: false,
-          status: 'error',
-          error: 'বর্তমান পাসকোডটি সঠিক নয় (Current PIN does not match)'
-        });
-      }
-
-      if (!newPin || String(newPin).trim().length < 4 || String(newPin).trim().length > 6) {
-        return createJsonResponse({
-          success: false,
-          status: 'error',
-          error: 'নতুন পাসকোডটি অবশ্যই ৪ থেকে ৬ সংখ্যার ডিজিট হতে হবে'
-        });
-      }
-
-      const cleanPin = String(newPin).trim();
-      const props = PropertiesService.getScriptProperties();
-      props.setProperty('APP_PIN', cleanPin);
-      props.setProperty('SECURITY_TOKEN', cleanPin);
-
-      return createJsonResponse({
-        success: true,
-        status: 'success',
-        message: 'নিরাপত্তা পাসকোড ক্লাউডে সফলভাবে সংরক্ষিত হয়েছে',
-        pin: cleanPin
-      });
-    }
-
-    // Security Gate for all mutations
-    if (!isAuthorized(e, payload)) {
-      return createJsonResponse({
-        success: false,
-        status: 'error',
-        error: 'UNAUTHORIZED: Security Passcode/Token is invalid or missing'
-      });
-    }
-
-    // Action: Dedicated Image Upload to Google Drive
-    if (action === 'uploadImage') {
-      const base64Data = payload.imageBase64 || payload.data?.imageBase64;
-      const fileName = payload.fileName || ('SmartHisab_' + new Date().getTime() + '.jpg');
-      if (!base64Data) {
-        return createJsonResponse({ success: false, error: 'No image data provided' });
-      }
-      const driveUrl = saveBase64ImageToDrive(base64Data, fileName);
-      if (driveUrl) {
-        return createJsonResponse({
-          success: true,
-          status: 'success',
-          url: driveUrl,
-          directImageUrl: driveUrl
-        });
-      } else {
-        return createJsonResponse({
-          success: false,
-          error: 'Failed to save image to Google Drive'
-        });
-      }
-    }
-
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    setupSheets(ss);
+    const action = p.action;
 
-    const sheetName = resolveSheetName(payload.sheet);
-    const record = payload.data || {};
-
-    // 1. ADD / CREATE ACTION
-    if (action === 'add' || action === 'create') {
-      if (!sheetName || !SCHEMAS[sheetName]) {
-        return createJsonResponse({ success: false, error: 'Invalid or unknown sheet name: ' + payload.sheet });
-      }
-
-      const sheet = ss.getSheetByName(sheetName);
-      const headers = SCHEMAS[sheetName];
-
-      if (!record.ID) {
-        record.ID = 'TRX-' + new Date().getTime() + Math.floor(Math.random() * 1000);
-      }
-
-      if (!record.Date) {
-        record.Date = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-      }
-
-      // Handle Image Upload for Production
-      if (sheetName === 'Production') {
-        const base64Data = payload.imageBase64 || record.Image_Base64 || (record.Image_URL && String(record.Image_URL).startsWith('data:') ? record.Image_URL : null);
-        if (base64Data) {
-          const driveUrl = saveBase64ImageToDrive(base64Data, (record['Work Name'] || record.ID || 'prod') + '.jpg');
-          if (driveUrl) {
-            record.Image_URL = driveUrl;
-          } else if (record.Image_URL && String(record.Image_URL).startsWith('data:')) {
-            record.Image_URL = '';
-          }
-        }
-        delete record.Image_Base64; // Don't persist large base64 string directly into sheet cells
-
-        // Formula Calculation
-        const type = record.Type || 'Work';
-        if (type === 'Work') {
-          const pcs = Number(record.Pcs) || 0;
-          const rate = Number(record.Rate) || 0;
-          const dozen = Number((pcs / 12).toFixed(2));
-          const earned = Number((dozen * rate).toFixed(2));
-          record.Dozen = dozen;
-          record.Earned = earned;
-          record.Received = 0;
-        } else if (type === 'Withdrawal') {
-          const received = Number(record.Received) || Number(record.Amount) || 0;
-          record.Received = received;
-          record.Earned = 0;
-          record.Pcs = 0;
-          record.Dozen = 0;
-          record.Rate = 0;
-        }
-      }
-
-      // Ensure Status is preserved or set
-      if (record.IsPending === true || record.IsPending === 'true' || record.Status === 'Pending' || record.Status === 'পেন্ডিং') {
-        record.Status = 'Pending';
-      } else if (!record.Status) {
-        record.Status = 'Completed';
-      }
-
-      // Get actual sheet headers from row 1 to guarantee exact column mapping
-      let actualHeaders = sheet.getLastColumn() > 0 ? sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), headers.length)).getValues()[0].filter(Boolean) : [];
-      if (!actualHeaders || actualHeaders.length === 0) {
-        actualHeaders = headers;
-        sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-      } else {
-        // Ensure Status, Tag and Production Timing columns exist
-        if (sheetName === 'Production') {
-          const prodCols = ['Tag', 'Start Time', 'End Time', 'Duration', 'Status'];
-          prodCols.forEach(col => {
-            if (!actualHeaders.includes(col)) {
-              const nextCol = sheet.getLastColumn() + 1;
-              sheet.getRange(1, nextCol).setValue(col).setFontWeight('bold').setBackground('#080B10').setFontColor('#FFC72C');
-              actualHeaders.push(col);
-            }
-          });
-        } else if (!actualHeaders.includes('Status')) {
-          const nextCol = actualHeaders.length + 1;
-          sheet.getRange(1, nextCol).setValue('Status');
-          sheet.getRange(1, nextCol).setBackground('#0F172A').setFontColor('#F8FAFC').setFontWeight('bold');
-          actualHeaders.push('Status');
-        }
-      }
-
-      // Map row values according to actual header ordering
-      const rowValues = actualHeaders.map(header => {
-        let val = record[header];
-        if (val === undefined || val === null) return '';
-        return val;
-      });
-
-      sheet.appendRow(rowValues);
-      return createJsonResponse({
-        success: true,
-        status: 'success',
-        action: 'create',
-        data: record
-      });
+    if (action === 'getAll' || action === 'init') {
+      Object.keys(SCHEMAS).forEach(function (n) { ensureSheet_(ss, n); });
+      return action === 'init' ? json_({ success: true, status: 'success' }) : json_({ success: true, status: 'success', data: readAll_(ss), timestamp: new Date().toISOString() });
+    }
+    if (action === 'uploadImage') {
+      const r = saveImage_(p.imageBase64, p.fileName);
+      return r ? json_(Object.assign({ success: true, status: 'success' }, r)) : fail_('ছবির ডেটা পাওয়া যায়নি');
     }
 
-    // 2. UPDATE ACTION
-    if (action === 'update') {
-      if (!sheetName || !SCHEMAS[sheetName]) {
-        return createJsonResponse({ success: false, error: 'Invalid sheet name: ' + payload.sheet });
-      }
-
-      const sheet = ss.getSheetByName(sheetName);
-      const headers = SCHEMAS[sheetName];
-      const id = payload.id || record.ID;
-
-      if (!id) {
-        return createJsonResponse({ success: false, error: 'Missing record ID for update' });
-      }
-
-      // Handle Base64 Image update if provided
-      if (sheetName === 'Production') {
-        const base64Data = payload.imageBase64 || record.Image_Base64 || (record.Image_URL && String(record.Image_URL).startsWith('data:') ? record.Image_URL : null);
-        if (base64Data) {
-          const driveUrl = saveBase64ImageToDrive(base64Data, (record['Work Name'] || id || 'prod') + '.jpg');
-          if (driveUrl) {
-            record.Image_URL = driveUrl;
-          } else if (record.Image_URL && String(record.Image_URL).startsWith('data:')) {
-            record.Image_URL = '';
-          }
-        }
-        delete record.Image_Base64;
-
-        const type = record.Type || 'Work';
-        if (type === 'Work') {
-          const pcs = Number(record.Pcs) || 0;
-          const rate = Number(record.Rate) || 0;
-          record.Dozen = Number((pcs / 12).toFixed(2));
-          record.Earned = Number((record.Dozen * rate).toFixed(2));
-          record.Received = 0;
-        } else if (type === 'Withdrawal') {
-          record.Received = Number(record.Received) || Number(record.Amount) || 0;
-          record.Earned = 0;
-          record.Pcs = 0;
-          record.Dozen = 0;
-          record.Rate = 0;
-        }
-      }
-
-      const lastRow = sheet.getLastRow();
-      let foundRow = -1;
-
-      if (lastRow > 1) {
-        const idCol = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-        for (let i = 0; i < idCol.length; i++) {
-          if (String(idCol[i][0]) === String(id)) {
-            foundRow = i + 2;
-            break;
-          }
-        }
-      }
-
-      if (foundRow === -1) {
-        return createJsonResponse({ success: false, error: 'Row not found for ID: ' + id });
-      }
-
-      // Preserve existing image URL if not updated in this request
-      if (sheetName === 'Production' && !record.Image_URL) {
-        const currentHeaders = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-        const imgIdx = currentHeaders.indexOf('Image_URL');
-        if (imgIdx !== -1) {
-          const existingVal = sheet.getRange(foundRow, imgIdx + 1).getValue();
-          if (existingVal) record.Image_URL = existingVal;
-        }
-      }
-
-      // Handle Status field in update
-      if (record.IsPending === true || record.IsPending === 'true' || record.Status === 'Pending' || record.Status === 'পেন্ডিং') {
-        record.Status = 'Pending';
-      } else if (record.IsPending === false || record.IsPending === 'false' || record.Status === 'Completed') {
-        record.Status = 'Completed';
-      } else if (!record.Status) {
-        const currentHeaders = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-        const statusIdx = currentHeaders.indexOf('Status');
-        if (statusIdx !== -1) {
-          const existingVal = sheet.getRange(foundRow, statusIdx + 1).getValue();
-          if (existingVal) record.Status = existingVal;
-        }
-      }
-
-      // Get actual sheet headers from row 1 to guarantee exact column mapping
-      let actualHeaders = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), headers.length)).getValues()[0].filter(Boolean);
-      if (!actualHeaders || actualHeaders.length === 0) {
-        actualHeaders = headers;
-      }
-      
-      // Ensure required columns exist on the sheet
-      if (sheetName === 'Production') {
-        const prodCols = ['Start Time', 'End Time', 'Duration', 'Status'];
-        prodCols.forEach(col => {
-          if (!actualHeaders.includes(col)) {
-            const nextCol = sheet.getLastColumn() + 1;
-            sheet.getRange(1, nextCol).setValue(col).setFontWeight('bold').setBackground('#080B10').setFontColor('#FFC72C');
-            actualHeaders.push(col);
-          }
-        });
-      } else if (!actualHeaders.includes('Status')) {
-        const nextCol = sheet.getLastColumn() + 1;
-        sheet.getRange(1, nextCol).setValue('Status').setFontWeight('bold').setBackground('#080B10').setFontColor('#FFC72C');
-        actualHeaders.push('Status');
-      }
-
-      const rowValues = actualHeaders.map(header => {
-        let val = record[header];
-        if (val === undefined || val === null) return '';
-        return val;
-      });
-
-      sheet.getRange(foundRow, 1, 1, actualHeaders.length).setValues([rowValues]);
-      return createJsonResponse({
-        success: true,
-        status: 'success',
-        action: 'update',
-        data: record
-      });
-    }
-
-    // 3. DELETE ACTION
-    if (action === 'delete') {
-      if (!sheetName || !SCHEMAS[sheetName]) {
-        return createJsonResponse({ success: false, error: 'Invalid sheet name' });
-      }
-
-      const sheet = ss.getSheetByName(sheetName);
-      const id = payload.id || record.ID;
-
-      if (!id) {
-        return createJsonResponse({ success: false, error: 'Missing ID for deletion' });
-      }
-
-      const lastRow = sheet.getLastRow();
-      let foundRow = -1;
-
-      if (lastRow > 1) {
-        const idCol = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-        for (let i = 0; i < idCol.length; i++) {
-          if (String(idCol[i][0]) === String(id)) {
-            foundRow = i + 2;
-            break;
-          }
-        }
-      }
-
-      if (foundRow === -1) {
-        return createJsonResponse({ success: false, error: 'Row not found for ID: ' + id });
-      }
-
-      sheet.deleteRow(foundRow);
-      return createJsonResponse({
-        success: true,
-        status: 'success',
-        action: 'delete',
-        data: { ID: id, deleted: true }
-      });
-    }
-
-    // 4. CASCADING FUND DELETION
     if (action === 'deleteFundCascade') {
-      const fundId = payload.fundId || payload.id || record.ID;
-      if (!fundId) {
-        return createJsonResponse({ success: false, error: 'Missing fundId for cascade deletion' });
+      const fundId = p.fundId || p.id;
+      if (!fundId) return fail_('fundId প্রয়োজন');
+      const fs = ensureSheet_(ss, 'Fund'), ts = ensureSheet_(ss, 'Fund_Transaction');
+      const fr = findRow_(fs, fundId);
+      let count = 0;
+      const tHeads = headersOf_(ts, 'Fund_Transaction'), fidCol = tHeads.indexOf('Fund ID') + 1;
+      for (let r = ts.getLastRow(); r >= 2; r--) {
+        if (String(ts.getRange(r, fidCol).getValue()) === String(fundId)) { ts.deleteRow(r); count++; }
       }
-
-      // Delete fund from Fund sheet
-      const fundSheet = ss.getSheetByName('Fund');
-      if (fundSheet && fundSheet.getLastRow() > 1) {
-        const lastRow = fundSheet.getLastRow();
-        const ids = fundSheet.getRange(2, 1, lastRow - 1, 1).getValues();
-        for (let i = 0; i < ids.length; i++) {
-          if (String(ids[i][0]) === String(fundId)) {
-            fundSheet.deleteRow(i + 2);
-            break;
-          }
-        }
-      }
-
-      // Cascade delete all transactions in Fund_Transaction
-      const txSheet = ss.getSheetByName('Fund_Transaction');
-      let deletedCount = 0;
-      if (txSheet && txSheet.getLastRow() > 1) {
-        const lastTxRow = txSheet.getLastRow();
-        // Col 3 is 'Fund ID' (1:ID, 2:Date, 3:Fund ID)
-        const txIds = txSheet.getRange(2, 3, lastTxRow - 1, 1).getValues();
-        for (let j = txIds.length - 1; j >= 0; j--) {
-          if (String(txIds[j][0]) === String(fundId)) {
-            txSheet.deleteRow(j + 2);
-            deletedCount++;
-          }
-        }
-      }
-
-      return createJsonResponse({
-        success: true,
-        status: 'success',
-        action: 'deleteFundCascade',
-        fundId: fundId,
-        deletedTransactionsCount: deletedCount
-      });
+      if (fr > -1) fs.deleteRow(fr);
+      return json_({ success: true, status: 'success', fundId: fundId, deletedTransactionsCount: count });
     }
 
-    return createJsonResponse({ success: false, error: 'Unknown POST action: ' + action });
+    const name = resolveSheetName(p.sheet);
+    if (!name) return fail_('অজানা শিট: ' + p.sheet);
+    const sh = ensureSheet_(ss, name);
+    const rec = Object.assign({}, p.data || {});
 
+    if (action === 'add' || action === 'create') {
+      const bad = validate_(name, rec); if (bad) return fail_(bad);
+      if (!rec.ID) rec.ID = newId_();
+      if (!rec.Date) rec.Date = today_();
+      if (findRow_(sh, rec.ID) > -1) return json_({ success: true, status: 'success', action: 'create', duplicate: true, data: rec }); // পুনরায় পাঠালেও দ্বিতীয় সারি হবে না
+      if (name === 'Fund_Transaction') {
+        if (!rec['Fund ID'] || findRow_(ensureSheet_(ss, 'Fund'), rec['Fund ID']) === -1) return fail_('ফান্ড খুঁজে পাওয়া যায়নি');
+      }
+      if (name === 'Production') {
+        const img = p.imageBase64 || rec.Image_Base64 || (String(rec.Image_URL || '').indexOf('data:') === 0 ? rec.Image_URL : null);
+        if (img) { const r = saveImage_(img, (rec['Work Name'] || rec.ID) + '.jpg'); rec.Image_URL = r ? r.directImageUrl : ''; }
+        delete rec.Image_Base64;
+        applyProduction_(rec);
+      }
+      normStatus_(rec, 'Completed');
+      const heads = headersOf_(sh, name);
+      const vals = heads.map(function (h) { const v = rec[h]; return (v === undefined || v === null) ? '' : v; });
+      sh.getRange(sh.getLastRow() + 1, 1, 1, vals.length).setValues([vals]);
+      return json_({ success: true, status: 'success', action: 'create', data: rec });
+    }
+
+    if (action === 'update') {
+      const id = p.id || rec.ID;
+      if (!id) return fail_('ID প্রয়োজন');
+      const row = findRow_(sh, id);
+      if (row === -1) return fail_('সারি পাওয়া যায়নি: ' + id);
+      const bad = validate_(name, rec); if (bad) return fail_(bad);
+      const heads = headersOf_(sh, name);
+      const existing = sh.getRange(row, 1, 1, heads.length).getValues()[0];
+      const merged = {};
+      heads.forEach(function (h, i) { merged[h] = fmtDate_(existing[i]); });
+      delete rec.ID; delete rec._row;
+      Object.keys(rec).forEach(function (k) { if (rec[k] !== undefined && rec[k] !== null) merged[k] = rec[k]; });
+      merged.ID = id;
+      if (name === 'Production') {
+        const img = p.imageBase64 || rec.Image_Base64 || (String(rec.Image_URL || '').indexOf('data:') === 0 ? rec.Image_URL : null);
+        if (img) { const r = saveImage_(img, (merged['Work Name'] || id) + '.jpg'); if (r) merged.Image_URL = r.directImageUrl; }
+        delete merged.Image_Base64;
+        applyProduction_(merged);
+      }
+      normStatus_(merged, merged.Status || 'Completed');
+      const vals = heads.map(function (h) { const v = merged[h]; return (v === undefined || v === null) ? '' : v; });
+      sh.getRange(row, 1, 1, vals.length).setValues([vals]);
+      return json_({ success: true, status: 'success', action: 'update', data: merged });
+    }
+
+    if (action === 'delete') {
+      const id = p.id || rec.ID;
+      if (!id) return fail_('ID প্রয়োজন');
+      const row = findRow_(sh, id);
+      if (row === -1) return fail_('সারি পাওয়া যায়নি: ' + id);
+      sh.deleteRow(row);
+      return json_({ success: true, status: 'success', action: 'delete', data: { ID: id, deleted: true } });
+    }
+    return fail_('অজানা অ্যাকশন: ' + action);
   } catch (err) {
-    return createJsonResponse({
-      success: false,
-      status: 'error',
-      error: err.toString()
-    });
+    return fail_(String(err && err.message ? err.message : err));
   } finally {
-    lock.releaseLock();
+    try { lock.releaseLock(); } catch (e) {}
   }
+}
+
+/* ===== এককালীন ব্যবহারের ফাংশন (Apps Script এডিটর থেকে নিজে চালাবেন) ===== */
+
+/** মোট হিসাব যাচাই: লগে দেখুন (View > Logs)। ডেটা বদলায় না। */
+function auditTotals() {
+  const d = readAll_(SpreadsheetApp.getActiveSpreadsheet());
+  const sum = function (a, k) { return a.reduce(function (s, r) { return s + (Number(r[k]) || 0); }, 0); };
+  const earned = sum(d.production, 'Earned'), recv = sum(d.production, 'Received');
+  Logger.log('কাজের আয়: ' + earned.toFixed(2) + ' | উত্তোলন: ' + recv.toFixed(2) + ' | মোট পাওনা: ' + (earned - recv).toFixed(2));
+  Logger.log('খরচ: ' + sum(d.expense, 'Amount') + ' | ঋণ নেওয়া: ' + sum(d.loan, 'Loan Taken') + ' | ঋণ পরিশোধ: ' + sum(d.loan, 'Loan Paid'));
+}
+
+/** একই ID-র দ্বিতীয় সারিকে নতুন অনন্য ID দেয় (কোনো সারি মোছে না, মোট অঙ্ক একই থাকে) এবং ডুপ্লিকেট 'Status' কলামের হেডার পরিষ্কার করে। */
+function repairData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  Object.keys(SCHEMAS).forEach(function (name) {
+    const sh = ss.getSheetByName(name);
+    if (!sh || sh.getLastRow() < 2) return;
+    const seen = {};
+    const ids = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
+    ids.forEach(function (r, i) {
+      const id = String(r[0]);
+      if (!id) return;
+      if (seen[id]) { const nid = id + '-' + (seen[id] + 1); sh.getRange(i + 2, 1).setValue(nid); Logger.log(name + ' সারি ' + (i + 2) + ': ' + id + ' → ' + nid); seen[id]++; }
+      else seen[id] = 1;
+    });
+    const lastCol = sh.getLastColumn();
+    const heads = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+    const first = {};
+    heads.forEach(function (h, c) {
+      if (!h) return;
+      if (first[h] === undefined) { first[h] = c; return; }
+      // পরের একই-নামের কলামে ডেটা না থাকলেই কেবল হেডার মোছা হয়
+      const rows = Math.max(sh.getLastRow() - 1, 1);
+      const col = sh.getRange(2, c + 1, rows, 1).getValues().filter(function (x) { return x[0] !== ''; });
+      if (!col.length) { sh.getRange(1, c + 1).clearContent(); Logger.log(name + ': ডুপ্লিকেট হেডার "' + h + '" (কলাম ' + (c + 1) + ') পরিষ্কার'); }
+    });
+  });
+  Logger.log('সম্পন্ন।');
 }

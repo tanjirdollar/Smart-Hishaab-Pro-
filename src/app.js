@@ -36,7 +36,8 @@ import {
   sendMutation,
   testConnection,
   updateBackendSecurityToken,
-  verifyPinWithBackend
+  verifyPinWithBackend,
+  getAuthHeaders
 } from './api.js';
 
 import {
@@ -2693,7 +2694,7 @@ export async function updatePasscode() {
     if (confirmInput) confirmInput.value = '';
 
     if (backendRes && backendRes.success) {
-      showToast('✓ নিরাপত্তা পাসকোড সফলভাবে ক্লাউডে আপডেট হয়েছে! সব ডিভাইসে নতুন পিন প্রযোজ্য।', 'success');
+      showToast('✓ অ্যাপ-লক পিন এই ডিভাইসে আপডেট হয়েছে (ডেটার নিরাপত্তা Google লগইনে সুরক্ষিত)', 'success');
     } else {
       showToast('✓ নতুন পাসকোড ডিভাইসে সক্রিয় হয়েছে! (ক্লাউডে সম্পূর্ণ সিঙ্ক করতে Code.gs স্ক্রিপ্ট আপডেট ডিপ্লয় করুন)', 'info');
     }
@@ -3959,7 +3960,7 @@ export async function submitSheetForm() {
             const cleanName = (newRow['Work Name'] || 'Production').replace(/[^a-zA-Z0-9_\u0980-\u09FF]/g, '_');
             const upRes = await fetch('/api/upload-image', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
               body: JSON.stringify({
                 imageBase64: currentCompressedImageBase64,
                 fileName: `SmartHisab_${cleanName}_${recordId}`,
@@ -4796,7 +4797,7 @@ export async function processAiPrompt() {
   try {
     const res = await fetch('/api/gemini/parse-entry', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
       body: JSON.stringify({ prompt: promptText })
     });
 

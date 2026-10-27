@@ -260,6 +260,17 @@ app.post('/api/sheets-proxy', async (req, res) => {
   }
 });
 
+// Direct Vercel / Cloud handler emulation for /api/sheets
+app.all('/api/sheets', async (req, res) => {
+  try {
+    const sheetsModule: any = await import('./api/sheets.js');
+    return sheetsModule.default(req, res);
+  } catch (err: any) {
+    console.error('Sheets handler error:', err);
+    res.status(500).json({ success: false, error: err.message || 'Server error' });
+  }
+});
+
 // Gemini AI Financial Transaction Extraction Endpoint
 app.post('/api/gemini/parse-entry', async (req, res) => {
   try {
