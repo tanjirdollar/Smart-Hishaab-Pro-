@@ -16,8 +16,19 @@ export async function callGas(body) {
       signal: ctrl.signal
     });
     const text = await r.text();
-    try { return { status: 200, json: JSON.parse(text) }; }
-    catch (e) { return { status: 502, json: { success: false, error: 'Google Sheets থেকে অবৈধ উত্তর এসেছে' } }; }
+    try {
+      const parsed = JSON.parse(text);
+      // Compatibility Fallback: যদি গুগল শিটের পুরোনো ডিপ্লয়মেন্ট এখনো এক্টিভ থাকে এবং POST getAll সাপোর্ট না করে
+      if (parsed && parsed.error && parsed.error.includes('Unknown POST action: getAll') && body.action === 'getAll') {
+        const getUrl = url + (url.includes('?') ? '&' : '?') + 'action=getAll&token=1234';
+        const getRes = await fetch(getUrl, { method: 'GET', redirect: 'follow' });
+        const getText = await getRes.text();
+        return { status: 200, json: JSON.parse(getText) };
+      }
+      return { status: 200, json: parsed };
+    } catch (e) {
+      return { status: 502, json: { success: false, error: 'Google Sheets থেকে অবৈধ উত্তর এসেছে' } };
+    }
   } catch (e) {
     const msg = e && e.name === 'AbortError' ? 'Google Sheets সাড়া দিতে দেরি করছে' : 'Google Sheets-এর সঙ্গে সংযোগ ব্যর্থ';
     return { status: 504, json: { success: false, error: msg } };
