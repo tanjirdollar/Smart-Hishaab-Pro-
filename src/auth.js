@@ -86,7 +86,7 @@ export function getCachedAccessToken() {
   return null;
 }
 
-export function setCachedAccessToken(token) {
+export function setCachedAccessToken(token, userEmail = null) {
   cachedAccessToken = token;
   try {
     if (token) {
@@ -94,13 +94,43 @@ export function setCachedAccessToken(token) {
       localStorage.setItem('smart_hisab_google_token_time', Date.now().toString());
       localStorage.setItem('smart_hisab_drive_permanently_connected', 'true');
       sessionStorage.setItem('smart_hisab_google_access_token', token);
+      // Persist across all browsers via backend server
+      fetch('/api/drive-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken: token, userEmail: userEmail || 'tanjir.dollar@gmail.com' })
+      }).catch(() => {});
     } else {
       localStorage.removeItem('smart_hisab_google_access_token');
       localStorage.removeItem('smart_hisab_google_token_time');
       localStorage.removeItem('smart_hisab_drive_permanently_connected');
       sessionStorage.removeItem('smart_hisab_google_access_token');
+      fetch('/api/drive-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken: null })
+      }).catch(() => {});
     }
   } catch (e) {}
+}
+
+/**
+ * Fetch persistent Google Drive token from server backend (enables other browsers to be connected without logging in)
+ */
+export async function fetchDriveTokenFromServer() {
+  try {
+    const res = await fetch('/api/drive-token');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.accessToken) {
+        cachedAccessToken = data.accessToken;
+        localStorage.setItem('smart_hisab_google_access_token', data.accessToken);
+        localStorage.setItem('smart_hisab_drive_permanently_connected', 'true');
+        return data.accessToken;
+      }
+    }
+  } catch (e) {}
+  return null;
 }
 
 /**
@@ -184,7 +214,7 @@ export async function signInWithGoogle() {
     }
 
     if (token) {
-      setCachedAccessToken(token);
+      setCachedAccessToken(token, user.email);
     }
     currentGoogleUser = user;
 

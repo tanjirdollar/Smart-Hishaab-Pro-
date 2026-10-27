@@ -14,6 +14,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const isProd = process.env.NODE_ENV === 'production';
 
+try {
+  fs.writeFileSync('/tmp/server_running.txt', 'started at ' + new Date().toISOString());
+} catch(e) {}
+
 // Ensure uploads directory exists
 const uploadsDir = path.resolve(__dirname, 'public/uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -38,21 +42,177 @@ app.use((req, res, next) => {
   next();
 });
 
-// Image upload endpoint (stores image for instant cross-device and cross-browser access)
-app.post('/api/upload-image', (req, res) => {
+// Persistent Google Drive Credentials Cache
+const driveTokenPath = path.resolve(__dirname, 'drive_session.json');
+let cachedDriveToken: string | null = null;
+let cachedDriveEmail: string | null = 'tanjir.dollar@gmail.com';
+
+try {
+  if (fs.existsSync(driveTokenPath)) {
+    const raw = JSON.parse(fs.readFileSync(driveTokenPath, 'utf8'));
+    if (raw && raw.accessToken) {
+      cachedDriveToken = raw.accessToken;
+      cachedDriveEmail = raw.userEmail || 'tanjir.dollar@gmail.com';
+    }
+  }
+} catch (e) {
+  console.warn('Notice reading drive_session.json:', e);
+}
+
+// Drive Token endpoints for permanent cross-browser synchronization
+app.get('/api/drive-token', (req, res) => {
+  res.json({
+    connected: Boolean(cachedDriveToken),
+    accessToken: cachedDriveToken,
+    userEmail: cachedDriveEmail
+  });
+});
+
+app.post('/api/drive-token', (req, res) => {
   try {
-    const { imageBase64, fileName, recordId } = req.body || {};
+    const { accessToken, userEmail } = req.body || {};
+    if (accessToken) {
+      cachedDriveToken = accessToken;
+      if (userEmail) cachedDriveEmail = userEmail;
+      fs.writeFileSync(driveTokenPath, JSON.stringify({
+        accessToken,
+        userEmail: cachedDriveEmail,
+        updatedAt: new Date().toISOString()
+      }, null, 2));
+      return res.json({ success: true, message: 'Google Drive token synchronized on server' });
+    } else {
+      cachedDriveToken = null;
+      if (fs.existsSync(driveTokenPath)) fs.unlinkSync(driveTokenPath);
+      return res.json({ success: true, message: 'Google Drive token cleared' });
+    }
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Helper: Upload file directly to Google Drive via REST API v3
+async function uploadBufferToGoogleDrive(buffer: Buffer, fileName: string, token: string) {
+  const boundary = '-------314159265358979323846';
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+  const metadata = {
+    name: fileName,
+    mimeType: 'image/jpeg',
+    description: 'Smart Hisab Production Photo'
+  };
+
+  const metaHeader = `${delimiter}Content-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n${delimiter}Content-Type: image/jpeg\r\nContent-Transfer-Encoding: binary\r\n\r\n`;
+  const multipartBody = Buffer.concat([
+    Buffer.from(metaHeader),
+    buffer,
+    Buffer.from(closeDelimiter)
+  ]);
+
+  const driveRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/related; boundary=${boundary}`
+    },
+    body: multipartBody
+  });
+
+  if (!driveRes.ok) {
+    const errText = await driveRes.text();
+    throw new Error(`Drive upload failed (${driveRes.status}): ${errText}`);
+  }
+
+  const fileData: any = await driveRes.json();
+  const fileId = fileData.id;
+
+  // Set file permission to public read so thumbnails render everywhere
+  try {
+    await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ role: 'reader', type: 'anyone', allowFileDiscovery: false })
+    });
+  } catch (permErr) {
+    console.warn('Set drive permission notice:', permErr);
+  }
+
+  const directImageUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=s1000`;
+  const webViewLink = fileData.webViewLink || `https://drive.google.com/file/d/${fileId}/view`;
+
+  return { fileId, directImageUrl, webViewLink };
+}
+
+// Image upload endpoint (saves locally and uploads permanently to Google Drive)
+app.post('/api/upload-image', async (req, res) => {
+  try {
+    const { imageBase64, fileName, recordId, accessToken } = req.body || {};
     if (!imageBase64 || typeof imageBase64 !== 'string') {
       return res.status(400).json({ success: false, error: 'কোনো ইমেজ ডাটা পাওয়া যায়নি' });
     }
 
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(cleanBase64, 'base64');
-    const safeName = (fileName || `img_${recordId || Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '_') + '.jpg';
+    const safeName = (fileName || `img_${recordId || Date.now()}`).replace(/[^a-zA-Z0-9_\u0980-\u09FF-]/g, '_') + '.jpg';
     
+    // 1. Save local copy for fast CDN / offline caching
     fs.writeFileSync(path.join(uploadsDir, safeName), buffer);
-    const url = `/uploads/${safeName}`;
-    return res.json({ success: true, url, fileName: safeName });
+    const localUrl = `/uploads/${safeName}`;
+
+    let driveResult: { fileId: string; directImageUrl: string; webViewLink: string } | null = null;
+    const tokenToUse = accessToken || cachedDriveToken;
+
+    // 2. Direct upload to Google Drive if token is available
+    if (tokenToUse) {
+      try {
+        driveResult = await uploadBufferToGoogleDrive(buffer, safeName, tokenToUse);
+      } catch (driveErr: any) {
+        console.warn('Server direct Drive upload attempt failed:', driveErr.message);
+      }
+    }
+
+    // 3. Forward to Google Apps Script Web App as second cloud persistence layer
+    if (!driveResult) {
+      try {
+        const gasRes = await fetch(GAS_TARGET_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'uploadImage',
+            imageBase64,
+            fileName: safeName,
+            token: '1234',
+            userEmail: cachedDriveEmail || 'tanjir.dollar@gmail.com'
+          })
+        });
+        if (gasRes.ok) {
+          const gasData: any = await gasRes.json();
+          if (gasData && gasData.url) {
+            driveResult = {
+              fileId: gasData.fileId || '',
+              directImageUrl: gasData.url,
+              webViewLink: gasData.webViewLink || gasData.url
+            };
+          }
+        }
+      } catch (gasErr) {
+        console.warn('GAS cloud upload forward notice:', gasErr);
+      }
+    }
+
+    const finalUrl = driveResult?.directImageUrl || localUrl;
+
+    return res.json({
+      success: true,
+      url: finalUrl,
+      directImageUrl: driveResult?.directImageUrl || null,
+      driveFileId: driveResult?.fileId || null,
+      webViewLink: driveResult?.webViewLink || null,
+      localUrl,
+      fileName: safeName
+    });
   } catch (err: any) {
     console.error('Image upload failed:', err);
     res.status(500).json({ success: false, error: err.message || 'ছবি আপলোড ব্যর্থ হয়েছে' });

@@ -247,28 +247,28 @@ export function getDriveViewUrl(urlOrFileId) {
  */
 export function formatImageUrl(url, recordId = null) {
   const cache = getImageCache();
+  const trimmed = url ? String(url).trim() : '';
 
-  // If recordId provided, check if local base64 cache exists for instant rendering
+  // 1. If it's a Google Drive link, extract fileId and return universal high-reliability thumbnail
+  const fileId = extractDriveFileId(trimmed);
+  if (fileId) {
+    return `https://drive.google.com/thumbnail?id=${fileId}&sz=s1000`;
+  }
+
+  // 2. If it's a full http/https link or server upload URL
+  if (trimmed && (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('/uploads/'))) {
+    return trimmed;
+  }
+
+  // 3. If it's already a data URI
+  if (trimmed.startsWith('data:image')) return trimmed;
+
+  // 4. Fallback to local base64 cache for instant offline preview when remote link is not set
   if (recordId) {
     const cachedByRec = cache[String(recordId)];
     if (cachedByRec && cachedByRec.startsWith('data:image')) {
       return cachedByRec;
     }
-  }
-
-  if (!url) return '';
-  const trimmed = String(url).trim();
-  if (trimmed.startsWith('data:image')) return trimmed;
-
-  const fileId = extractDriveFileId(trimmed);
-  if (fileId) {
-    // Check if cache has base64 indexed by fileId
-    const cachedByFile = cache[fileId];
-    if (cachedByFile && cachedByFile.startsWith('data:image')) {
-      return cachedByFile;
-    }
-    // Universal high-reliability thumbnail endpoint with size parameter
-    return `https://drive.google.com/thumbnail?id=${fileId}&sz=s1000`;
   }
 
   return trimmed;
@@ -486,6 +486,8 @@ export function calculateFundBalances(funds, fundTransactions) {
 
     return {
       ...f,
+      totalIn,
+      totalOut,
       currentBalance,
       target,
       percent: Math.round(percent),

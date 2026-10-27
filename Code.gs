@@ -431,6 +431,29 @@ function doPost(e) {
       });
     }
 
+    // Action: Dedicated Image Upload to Google Drive
+    if (action === 'uploadImage') {
+      const base64Data = payload.imageBase64 || payload.data?.imageBase64;
+      const fileName = payload.fileName || ('SmartHisab_' + new Date().getTime() + '.jpg');
+      if (!base64Data) {
+        return createJsonResponse({ success: false, error: 'No image data provided' });
+      }
+      const driveUrl = saveBase64ImageToDrive(base64Data, fileName);
+      if (driveUrl) {
+        return createJsonResponse({
+          success: true,
+          status: 'success',
+          url: driveUrl,
+          directImageUrl: driveUrl
+        });
+      } else {
+        return createJsonResponse({
+          success: false,
+          error: 'Failed to save image to Google Drive'
+        });
+      }
+    }
+
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     setupSheets(ss);
 

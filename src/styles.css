@@ -1827,9 +1827,9 @@ tr.is-pending {
   box-sizing: border-box;
 }
 
-/* Redesigned Modern Production Card with Tag Badges, Time Banner & Clear Hierarchy */
-.prod-card-spacious,
-.prod-card-redesigned {
+/* Redesigned Modern Production & History Ledger Cards with Tag Badges, Time Banner & Clear Hierarchy */
+.prod-card-redesigned,
+.history-card-redesigned {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -1846,21 +1846,55 @@ tr.is-pending {
   overflow: hidden;
 }
 
-.prod-card-spacious:hover,
-.prod-card-redesigned:hover {
+.prod-card-redesigned:hover,
+.history-card-redesigned:hover {
   border-color: var(--border-active);
   background: var(--bg-card-hover);
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45), var(--gold-glow);
   transform: translateY(-1px);
 }
 
-.prod-card-spacious:active,
-.prod-card-redesigned:active {
+.prod-card-redesigned:active,
+.history-card-redesigned:active {
   transform: scale(0.995);
 }
 
-.prod-card-spacious.is-pending,
-.prod-card-redesigned.is-pending {
+.prod-card-redesigned.is-pending,
+.history-card-redesigned.is-pending {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.04);
+}
+
+/* Fallback Spacious 3-Row Card with Large Side Image */
+.prod-card-spacious {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 11px 13px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  position: relative;
+  overflow: hidden;
+}
+
+.prod-card-spacious:hover {
+  border-color: var(--border-active);
+  background: var(--bg-card-hover);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45), var(--gold-glow);
+  transform: translateY(-1px);
+}
+
+.prod-card-spacious:active {
+  transform: scale(0.995);
+}
+
+.prod-card-spacious.is-pending {
   border-color: rgba(245, 158, 11, 0.45);
   background: rgba(245, 158, 11, 0.04);
 }
